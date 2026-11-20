@@ -175,7 +175,7 @@ class PhaseLabelsetTests(unittest.TestCase):
             # eager reduction added to the masking path, and the whole point of
             # timing it separately is to see what the honesty feature costs.
             #
-            # llm_call/llm_retry_sleep/agent_step sit *above* the data
+            # llm_call/llm_retry_sleep sit *above* the data
             # pipeline (see tests/test_llm_timing.py): a 2026-08-07 trace left
             # 29% of a 372s turn attributable to nothing because every phase
             # here was data work and model latency had nowhere to land.
@@ -192,7 +192,7 @@ class PhaseLabelsetTests(unittest.TestCase):
             # honesty feature costs is exactly what must stay visible.
             {
                 "export", "extract", "open", "crop", "mask", "aggregate", "render",
-                "qa_pass_rate", "llm_call", "llm_retry_sleep", "agent_step",
+                "qa_pass_rate", "llm_call", "llm_retry_sleep",
                 "provenance", "evidence", "related_variables", "frames",
             },
         )
@@ -256,16 +256,6 @@ class InstrumentedPipelineTests(unittest.TestCase):
         mask_data_by_geometry(self._small_grid(), box(-74.9, 39.1, -73.1, 40.9), crop=False)
 
         self.assertEqual(_phase_samples("mask")[0] - before[0], 1)
-
-    def test_building_a_chart_payload_records_a_render_phase(self):
-        """The overlay PNG render and grid downsampling are pure CPU on the
-        plot path; without this phase they hide inside "whole-turn elapsed"."""
-        from tta_backend.tools.satellite_tools.plot_tools import _da_to_heatmap_payload
-
-        before = _phase_samples("render")
-        _da_to_heatmap_payload(self._small_grid(), "NO2 over NJ", "no2", "mol/m^2")
-
-        self.assertEqual(_phase_samples("render")[0] - before[0], 1)
 
     def test_aggregation_records_an_aggregate_phase(self):
         from tta_backend.domain.aggregation.aggregation_service import AggregationService

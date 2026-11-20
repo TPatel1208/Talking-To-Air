@@ -1,7 +1,6 @@
-"""Benchmark: hermetic tests for the checks, scoring, adapter parsing and case
-structure, plus the opt-in live run against the current system.
-
-Everything here but the last class spends no model tokens.
+"""Benchmark: hermetic tests for the checks, scoring, outcomes and case
+structure. Nothing here spends model tokens; the live run is
+``python -m benchmark.runner``.
 """
 import dataclasses
 import importlib.util
@@ -14,9 +13,8 @@ import unittest
 from collections import Counter
 from datetime import date
 
-import pytest
 
-from benchmark.adapters.current import outcome_from_sse, parse_sse, sources_in_header
+from benchmark.adapters.harness import sources_in_header
 from benchmark.checks import (
     AnswerMatches,
     AnswerMentionsAny,
@@ -42,7 +40,7 @@ BACKEND_DIR = os.path.dirname(os.path.dirname(__file__))
 REQUIRED_MODULES = ["langchain_mcp_adapters", "fastmcp", "uvicorn", "xarray", "zarr", "pyarrow"]
 _MISSING_DEPENDENCIES = any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES)
 
-# Names that exist only inside the current system's agents; no case may depend on them.
+# Tool names of the chat system the harness replaced; no case may depend on them.
 FORBIDDEN_INTERNAL_TOOLS = {
     "safe_retrieve", "await_retrieval", "point_timeseries", "plot_singular",
     "conduct_temporal_statistic", "compare", "validate_against_ground", "_finalize_sub_agent_result",
@@ -229,85 +227,7 @@ class AqsDateRelativeToClockTests(unittest.TestCase):
         self.assertIn("saw []", result.reason)
 
 
-JOINED_STREAM = (
-    'event: status\ndata: {"message": "Searching...", "stage": "search"}\n\n'
-    'event: tool_call\ndata: {"name": "search_datasets", "args": {}}\n\n'
-    'event: status\ndata: {"message": "Resolving...", "stage": "aoi"}\n\n'
-    'event: chart\ndata: {"type": "heatmap", "title": "NO2 over NJ", "chart_id": "c1", "lats": [1, 2]}\n\n'
-    'event: artifact\ndata: {"id": "map_1", "type": "map", "title": "NO2 over NJ"}\n\n'
-    'event: artifact\ndata: {"id": "map_1", "type": "map", "title": "NO2 over NJ"}\n\n'
-    'event: text\ndata: {"content": "Data sources: TEMPO_NO2_L3 \\u00b7 EPA AQS\\n\\n"}\n\n'
-    'event: text\ndata: {"content": "NO2 peaked near Newark."}\n\n'
-    'event: done\ndata: {"thread_id": "t", "response": "Data sources: TEMPO_NO2_L3 \\u00b7 EPA AQS\\n\\nNO2 peaked near Newark.",'
-    ' "artifacts": [], "tool_calls": []}\n\n'
-)
-
-
-class SseToOutcomeTests(unittest.TestCase):
-    def _make(self, joined=JOINED_STREAM):
-        calls = [
-            BoundaryCall("retrieve_subset", {"time_range": "2024-01-15/2024-01-16"}, {"job_handle": "job_obs_1"}),
-            BoundaryCall("get_retrieval_status", {"job_handle": "job_obs_1"}, {"status": "ready", "obs_handle": "obs_1"}),
-        ]
-        return outcome_from_sse(
-            joined, boundary_calls=calls, aqs_calls=[("monitors/byBox", {})],
-            clock=date(2026, 1, 1), elapsed_seconds=2.5,
-        )
-
-    def test_parse_sse_decodes_each_event_in_order(self):
-        events = parse_sse(JOINED_STREAM)
-
-        self.assertEqual([name for name, _ in events][:3], ["status", "tool_call", "status"])
-        self.assertEqual(events[3][1]["type"], "heatmap")
-
-    def test_charts_keep_type_and_title_but_not_the_payload(self):
-        outcome = self._make()
-
-        self.assertEqual(outcome.charts, [{"type": "heatmap", "title": "NO2 over NJ", "chart_id": "c1"}])
-
-    def test_artifacts_are_listed_once(self):
-        self.assertEqual(self._make().artifact_ids, ["map_1"])
-
-    def test_stages_and_tool_calls_keep_their_order(self):
-        outcome = self._make()
-
-        self.assertEqual(outcome.stages, ["search", "aoi"])
-        self.assertEqual(outcome.tool_calls, ["search_datasets"])
-
-    def test_answer_comes_from_done_and_names_its_sources(self):
-        outcome = self._make()
-
-        self.assertTrue(outcome.done)
-        self.assertIsNone(outcome.error)
-        self.assertIn("NO2 peaked near Newark.", outcome.answer_text)
-        self.assertEqual(outcome.sources_header, {"TEMPO_NO2_L3", "EPA AQS"})
-
-    def test_boundary_facts_and_run_metadata_pass_through(self):
-        outcome = self._make()
-
-        self.assertEqual(outcome.handles, ["obs_1"])
-        self.assertEqual(len(outcome.boundary_calls), 2)
-        self.assertEqual(outcome.aqs_calls, [("monitors/byBox", {})])
-        self.assertEqual(outcome.clock, date(2026, 1, 1))
-        self.assertEqual(outcome.elapsed_seconds, 2.5)
-
-    def test_answer_falls_back_to_streamed_text_without_a_done_response(self):
-        joined = 'event: text\ndata: {"content": "Part one. "}\n\nevent: text\ndata: {"content": "Part two."}\n\n'
-
-        outcome = self._make(joined)
-
-        self.assertEqual(outcome.answer_text, "Part one. Part two.")
-        self.assertFalse(outcome.done)
-        self.assertIsNone(outcome.sources_header)
-
-    def test_an_error_event_marks_the_run_errored(self):
-        joined = 'event: error\ndata: {"detail": "The agent failed."}\n\n'
-
-        outcome = self._make(joined)
-
-        self.assertEqual(outcome.error, "The agent failed.")
-        self.assertFalse(Completed().evaluate(outcome).passed)
-
+class SourcesHeaderTests(unittest.TestCase):
     def test_sources_header_is_none_without_one(self):
         self.assertIsNone(sources_in_header("No header here."))
         self.assertEqual(sources_in_header("Data sources: EPA AQS\n\nAnswer."), {"EPA AQS"})
@@ -1031,41 +951,13 @@ class TokenCountingTests(unittest.TestCase):
         self.assertEqual(outcome.token_total("output"), 2)
         self.assertIsNone(outcome.token_total("cache_read"))
 
-    def test_counting_tokens_adds_to_the_sink_and_still_reaches_the_app_metrics(self):
-        from benchmark.adapters.current import counting_tokens
-
-        forwarded = []
-        sink = {}
-        counted = counting_tokens(sink, lambda *args: forwarded.append(args))
-
-        counted("haiku", "satellite", "input", 100)
-        counted("haiku", "satellite", "input", 50)
-        counted("haiku", "satellite", "output", 7)
-
-        self.assertEqual(sink, {("haiku", "satellite", "input"): 150, ("haiku", "satellite", "output"): 7})
-        self.assertEqual(len(forwarded), 3)
-        self.assertEqual(forwarded[0], ("haiku", "satellite", "input", 100))
-
-    def test_the_patched_recorder_is_the_one_the_app_calls(self):
-        """The adapter patches record_llm_tokens on the metrics module, so the
-        app must resolve it there at call time, not hold its own reference."""
-        import inspect
-
-        from benchmark.adapters.current import _TOKEN_RECORDER_TARGET
-        from tta_backend.utils import llm_timing
-
-        module, name = _TOKEN_RECORDER_TARGET.rsplit(".", 1)
-        source = inspect.getsource(llm_timing._record_token_counters)
-
-        self.assertIn(f"from {module} import {name}", source)
-
 
 class CoreImportsTests(unittest.TestCase):
     def test_the_core_modules_do_not_import_the_application(self):
         code = (
             "import sys\n"
             "import benchmark.outcome, benchmark.checks, benchmark.cases, benchmark.scoring, benchmark.runner\n"
-            "import benchmark.report, benchmark.fake_earthdata, benchmark.adapters.current\n"
+            "import benchmark.report, benchmark.fake_earthdata, benchmark.adapters.harness\n"
             "import benchmark.adapters.workflow\n"
             "assert 'tta_backend' not in sys.modules, 'tta_backend was imported'\n"
         )
@@ -1075,69 +967,6 @@ class CoreImportsTests(unittest.TestCase):
         )
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
-
-
-_PROVIDER_KEYS = {"google": "google_api_key", "groq": "groq_api_key", "portkey": "portkey_api_key"}
-_PLACEHOLDER_KEYS = {"test", "your_google_key", "your_groq_key", "your_portkey_key"}
-
-
-def _missing_model_keys() -> list[str]:
-    """API keys missing for the providers the three agents are configured to use."""
-    from tta_backend.infrastructure.settings import get_settings
-
-    settings = get_settings()
-    providers = {
-        settings.supervisor_model_provider,
-        settings.earthdata_agent_provider,
-        settings.ground_agent_provider,
-    }
-    missing = []
-    for provider in sorted(providers):
-        attribute = _PROVIDER_KEYS.get(provider)
-        key = getattr(settings, attribute, None) if attribute else None
-        if not key or key in _PLACEHOLDER_KEYS:
-            missing.append(attribute.upper() if attribute else f"a key for provider {provider!r}")
-    return missing
-
-
-@unittest.skipIf(_MISSING_DEPENDENCIES, "benchmark test dependencies are not installed")
-class BenchmarkSuiteTests(unittest.IsolatedAsyncioTestCase):
-    """The whole benchmark against the current system. Opt-in (pytest -m eval)
-    because it calls real models and spends real tokens. The models come from
-    the environment's provider settings; skipped when a configured provider
-    has no real key, even when selected."""
-
-    @pytest.mark.eval
-    @unittest.skipIf(_missing_model_keys(), f"model keys missing: {_missing_model_keys()}")
-    async def test_current_system_meets_the_pass_threshold_within_budget(self):
-        from benchmark.adapters.current import CurrentSystemAdapter
-        from benchmark.fake_earthdata import HandleVolume
-        from benchmark.runner import run_suite
-        from benchmark.report import write_report
-        from benchmark.scoring import CATEGORY_BUDGETS, PASS_THRESHOLD, TOTAL_CASES, format_results_table
-
-        # The sub-agent trim ceiling is sized never to fire in a healthy
-        # workflow; if it does here, a compaction gap regressed.
-        with self.assertNoLogs("tta_backend.agents.subagent_trim", level="WARNING"):
-            with tempfile.TemporaryDirectory() as tmpdir:
-                results = await run_suite(CurrentSystemAdapter(), HandleVolume(tmpdir))
-
-        print("\n" + format_results_table(results))
-        # Saved before any assertion, so a failing run still leaves its evidence.
-        folder = write_report(results, os.environ.get("BENCHMARK_RESULTS_DIR", "benchmark-results"))
-        print(f"results saved to {folder}")
-
-        passed = sum(1 for result in results if result.passed)
-        failures = [result.case.id for result in results if not result.passed]
-        budget_breaches = [
-            f"{result.case.id} ({result.outcome.elapsed_seconds:.1f}s > {CATEGORY_BUDGETS[result.case.category]:.0f}s budget)"
-            for result in results
-            if not result.within_budget
-        ]
-
-        self.assertEqual(len(results), TOTAL_CASES)
-        self.assertFalse(budget_breaches, f"cases over their category latency budget: {budget_breaches}")
-        self.assertGreaterEqual(passed, PASS_THRESHOLD, f"failed cases: {failures}")
 
 
 if __name__ == "__main__":

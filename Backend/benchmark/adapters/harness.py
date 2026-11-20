@@ -8,11 +8,11 @@ supervisor picks the workflow or the exploration and writes the answer; the
 from __future__ import annotations
 
 import dataclasses
+import re
 import time
 import uuid
 from typing import Any
 
-from benchmark.adapters.current import sources_in_header
 from benchmark.adapters.explore import tokens_from_trace
 from benchmark.adapters.harness_boundary import PACKS_ROOT, USER_ID, harness_boundary
 from benchmark.adapters.workflow import stopped_reason
@@ -20,6 +20,15 @@ from benchmark.cases import BenchmarkCase
 from benchmark.outcome import Outcome, handles_from_calls
 
 _SUPERVISOR = "supervisor"
+_SOURCES_HEADER = re.compile(r"\A\s*Data sources:[ \t]*([^\n]+)")
+
+
+def sources_in_header(answer_text: str) -> set[str] | None:
+    """The sources named in the answer's opening "Data sources:" line, or None without one."""
+    match = _SOURCES_HEADER.match(answer_text)
+    if match is None:
+        return None
+    return {source.strip() for source in match.group(1).split("·") if source.strip()}
 
 
 def supervisor_tokens(turn: Any, model: str) -> dict[tuple[str, str, str], int]:

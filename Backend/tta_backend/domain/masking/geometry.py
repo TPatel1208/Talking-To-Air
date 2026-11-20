@@ -25,7 +25,7 @@ def geometry_mask(
     Boolean (lat, lon) DataArray: True inside ``geometry``.
 
     The single rasterization seam: ``mask_data_by_geometry`` applies it to
-    the data, and callers needing the region footprint as well (plot_tools'
+    the data, and callers needing the region footprint as well (the
     evidence crop) read it off this same mask instead of rasterizing an
     all-ones twin — the mask depends only on the grid and the geometry,
     never on the data values.

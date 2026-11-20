@@ -17,8 +17,9 @@ TOTAL_CASES = 20
 # service, so they measure the system's own overhead, not NASA's. A case over
 # its budget fails even when every check passes.
 #
-# Measured on the current system entered through the full chat stream. Where
-# a category ran over, its budget is the second-slowest time seen across two
+# Measured on the chat system that preceded the harness, entered through the
+# full chat stream; the harness is held to the same budgets. Where a category
+# ran over, its budget is the second-slowest time seen across two
 # full runs plus 20%, rounded up to 5s, so one wandering run still fails.
 CATEGORY_BUDGETS: dict[str, float] = {
     "discovery": 40.0,
@@ -135,13 +136,13 @@ def format_results_table(results: list[CaseResult], note: str | None = None) -> 
 
 HARNESS_TABLE_NOTE = (
     "Harness system: the supervisor end to end on the benchmark's fake data boundary. It is the gate system, "
-    "scored against the pass threshold and comparable with `current` run on the same fakes."
+    "scored against the pass threshold."
 )
 
 WORKFLOW_TABLE_HEADER = (
     "Workflow adapter: no model. Each case names the workflow that answers it and its inputs, and the "
     "harness runs it on the fake data boundary.\n"
-    "These results are not compared with the pass threshold or the current system's results."
+    "These results are not compared with the pass threshold."
 )
 
 
@@ -185,7 +186,7 @@ def format_workflow_table(results: list[CaseResult], uncovered: list[str]) -> st
 EXPLORE_TABLE_HEADER = (
     "Explore adapter: exploratory, with a real model. Each case's prompt is the objective of one exploration task\n"
     "run with the case's bundle on the fake data boundary. Model output varies between runs.\n"
-    "These results are not compared with the pass threshold or the current system's results."
+    "These results are not compared with the pass threshold."
 )
 
 

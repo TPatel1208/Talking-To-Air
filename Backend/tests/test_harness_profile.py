@@ -1,7 +1,5 @@
-"""operations.vertical_profile and render.profile, and their agreement with plot_vertical_profile."""
+"""operations.vertical_profile and render.profile."""
 import datetime
-import importlib.util
-import json
 import os
 import sys
 import tempfile
@@ -221,78 +219,6 @@ class RenderProfileTests(ProfileCase):
         grid = await self.seed_grid(layered_grid([1.0] * 6))
         failure = await self.failure(profiles.render_profile, {"profile": grid.id})
         self.assertEqual(failure.category, FailureCategory.BAD_INPUT)
-
-
-REQUIRED_MODULES = ["langchain", "langchain_mcp_adapters", "fastmcp", "uvicorn", "zarr", "rasterio", "cartopy"]
-
-
-@unittest.skipIf(
-    any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
-    "the plot tool's fake earthdata server dependencies are not installed",
-)
-class AgreesWithThePlotToolTests(ProfileCase):
-    """The same retrieval through plot_vertical_profile and through the harness gives the same profile."""
-
-    async def asyncSetUp(self) -> None:
-        await super().asyncSetUp()
-        from fake_earthdata_mcp import FakeEarthdataMCPServer, HandleVolume, build_fake_mcp
-        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
-        from tta_backend.infrastructure.settings import Settings
-
-        self.volume = HandleVolume(self._tmp.name + "/volume")
-        server = FakeEarthdataMCPServer(build_fake_mcp({
-            "export_result": self.volume.export_result,
-            "rematerialize": self.volume.rematerialize,
-            "get_retrieval_status": self.volume.get_retrieval_status,
-        }))
-        server.start()
-        self.addCleanup(server.stop)
-        self.mcp_tools = await load_raw_mcp_tools(Settings(earthdata_mcp_url=server.url, earthdata_mcp_token=None))
-
-    async def old_payload(self, make: Any) -> dict[str, Any]:
-        from tta_backend.tools.satellite_tools.plot_tools import make_plot_vertical_profile
-
-        self.volume.add_zarr("obs_prof", make)
-        emitted: dict[str, Any] = {}
-        tool = make_plot_vertical_profile(self.mcp_tools)
-        with patch("tta_backend.tools.satellite_tools.plot_tools.emit_chart", lambda p: emitted.update(payload=p)):
-            raw = await tool.ainvoke({"handle": "obs_prof", "location": "global"})
-        self.assertNotIn("error", json.loads(raw))
-        return emitted["payload"]
-
-    async def new_payload(self, ds: xr.Dataset) -> dict[str, Any]:
-        area = (await invoke(self.env, areas.resolve, {"place": "global"})).handle
-        area_record = await self.env.resolver.get("user-a", area)
-        self.files["obs_prof"] = ds
-        record = await self.env.context.storage.handles.record_retrieval(HandleRecord(
-            id="obs_prof", kind="grid", origin="retrieval", user_id="user-a", conversation_id="conv-1",
-            descriptor=Descriptor(
-                summary="Ozone profile", product="TEMPO_O3PROF", unit="DU",
-                region={**area_record.descriptor.region, "area": area},  # type: ignore[dict-item]
-                masking={"variable": "ozone_profile"},
-            ),
-            created_at=NOW, payload=ServicePayload(),
-        ))
-        table = await invoke(self.env, operation.vertical_profile, {"grid": record.id})
-        chart = await invoke(self.env, profiles.render_profile, {"profile": table.handle})
-        return self.artifacts.stored[chart.charts[0]]
-
-    async def test_the_profile_matches(self):
-        rng = np.random.default_rng(5)
-        values = rng.uniform(0.5, 30.0, (2, 2, 2, len(PRESSURES_TOP_DOWN)))
-        values[0, 0, 1, 3] = np.nan
-
-        def make() -> xr.Dataset:
-            return _o3prof_dataset(
-                xr, np, layer_values=values, times=("2025-10-01T12:00:00", "2025-10-01T13:00:00"),
-            )
-
-        old = await self.old_payload(make)
-        new = await self.new_payload(make())
-        for key in ("values", "layers", "default_axis", "layer_order", "valid_fraction", "units"):
-            self.assertEqual(new[key], old[key], key)
-        for kind in ("pressure", "altitude"):
-            self.assertEqual(new["vertical"][kind], old["vertical"][kind], kind)
 
 
 if __name__ == "__main__":

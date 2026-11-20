@@ -215,23 +215,6 @@ class MultiVariableExportResolutionTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await ExportService()._export_data_array(export, self.tools, collapse_to_2d=False)
 
-    async def test_export_inherits_a_recorded_choice_via_the_source_handle(self):
-        """The handle is threaded through, so a choice recorded at retrieval
-        time resolves the export even when the payload's ``variable`` is None."""
-        from tta_backend.services import variable_choice_registry
-        from tta_backend.services.export_service import ExportService
-
-        self._add_two_science_var_handle("obs_recorded")
-        variable_choice_registry._choices.clear()
-        variable_choice_registry._choices["obs_recorded"] = ("hcho", float("inf"))
-        self.addCleanup(variable_choice_registry._choices.clear)
-
-        export = {"variable": None, "units": "mol/m^2", "source_handles": ["obs_recorded"]}
-
-        da = await ExportService()._export_data_array(export, self.tools, collapse_to_2d=False)
-
-        self.assertEqual(da.name, "hcho")
-
 
 if __name__ == "__main__":
     unittest.main()

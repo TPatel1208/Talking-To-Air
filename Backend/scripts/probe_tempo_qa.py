@@ -33,7 +33,7 @@ if str(_BACKEND) not in sys.path:
 
 from tta_backend.datasets.registry import load_registry  # noqa: E402
 from tta_backend.domain.aggregation.aggregation_service import AggregationService  # noqa: E402
-from tta_backend.tools.satellite_tools.plot_tools import _downsample_grid  # noqa: E402
+from tta_backend.domain.charts.heatmap import downsample_grid as _downsample_grid  # noqa: E402
 
 
 def _groups(path):

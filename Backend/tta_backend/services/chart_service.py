@@ -3,23 +3,46 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from pydantic import ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from tta_backend.harness.results import RUN_ID_PATTERN, Mode
-from tta_backend.models import (
-    AgentResult,
-    DispatchResult,
-    agent_result_to_json,
-    chart_reference,
-    is_chart_reference,
-    parse_chart_payload,
-    parse_tool_results,
-)
 from tta_backend.repositories import chart_repository
 
 
 # Where a harness chart's link to its run is kept in the stored payload.
 LINK_KEY = "harness"
+
+
+class ChartPayload(BaseModel, extra="allow"):
+    type: str
+    title: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+# The few scalar fields a chart reference keeps: enough to name the chart and
+# to find the stored row again.
+_CHART_REFERENCE_KEYS = ("chart_id", "type", "title", "variable", "units")
+
+
+def chart_reference(stored: dict[str, Any]) -> ChartPayload:
+    """A persisted chart reduced to a pointer at its agent_charts row.
+
+    The row is the source of truth for the grid; ``reference=True`` tells a
+    reader to look the chart up rather than persist what it was handed."""
+    fields = {key: stored[key] for key in _CHART_REFERENCE_KEYS if stored.get(key) is not None}
+    metadata = stored.get("metadata")
+    name = metadata.get("name") if isinstance(metadata, dict) else None
+    # model_validate, not the constructor: `reference` is an extra field
+    # (extra="allow"), which a typed constructor call does not declare.
+    return ChartPayload.model_validate({
+        **fields,
+        "metadata": {"name": name} if name else {},
+        "reference": True,
+    })
+
+
+def is_chart_reference(payload: dict[str, Any]) -> bool:
+    return payload.get("reference") is True and bool(payload.get("chart_id"))
 
 
 @dataclass(frozen=True)
@@ -96,46 +119,9 @@ class ChartService:
                 resolved.append(payload)
         return resolved
 
-    async def checkpoint_envelope(self, result: AgentResult, thread_id: str, user_id: str) -> str:
-        """``result`` as the JSON a checkpointed ToolMessage carries.
-
-        Each chart is persisted first and then replaced by a reference to its
-        agent_charts row. The checkpoint rewrites a thread's whole message
-        list at every step, so a grid kept here would be stored again on
-        every later turn."""
-        return agent_result_to_json(await self._with_chart_references(result, thread_id, user_id))
-
-    async def checkpoint_dispatch_envelope(self, batch: DispatchResult, thread_id: str, user_id: str) -> str:
-        """``batch`` (the dispatch tool's result) as checkpointed JSON,
-        each item's charts swapped for references exactly as in
-        checkpoint_envelope."""
-        items = [
-            item.model_copy(update={"result": await self._with_chart_references(item.result, thread_id, user_id)})
-            if item.result is not None else item
-            for item in batch.results
-        ]
-        return DispatchResult(results=items).model_dump_json(exclude_none=True)
-
-    async def _with_chart_references(self, result: AgentResult, thread_id: str, user_id: str) -> AgentResult:
-        references = []
-        for chart in result.charts:
-            stored = await self.persist_chart_payload(thread_id, chart, user_id)
-            if stored is not None:
-                references.append(chart_reference(stored))
-        return result.model_copy(update={"charts": references})
-
     async def get_chart(self, chart_id: str) -> dict[str, Any] | None:
         return await chart_repository.get_chart(chart_id)
 
     async def get_owned_charts(self, chart_ids: list[str], user_id: str) -> dict[str, dict[str, Any]]:
         """The charts among ``chart_ids`` that ``user_id`` owns, keyed by id."""
         return await chart_repository.get_charts(chart_ids, user_id) if chart_ids else {}
-
-    def parse_charts(self, content: Any) -> tuple[str | None, list[Any]]:
-        results = parse_tool_results(content)
-        if results:
-            return "\n\n".join(r.text for r in results), [chart for r in results for chart in r.charts]
-        chart = parse_chart_payload(content)
-        if chart is not None:
-            return None, [chart]
-        return None, []

@@ -95,14 +95,13 @@ from tta_backend.harness.trace import FailureCategory, RunNotFound, TraceStore
 from tta_backend.harness.workflows.loader import WorkflowCatalogue
 from tta_backend.harness.workflows.runner import EnvFactory, connect_reason
 from tta_backend.infrastructure.settings import Settings
-from tta_backend.models import chart_reference
 from tta_backend.models.artifact import ArtifactReference
 from tta_backend.models.transcript import ConnectorName, TranscriptResult, TranscriptTurn
 from tta_backend.repositories import transcript_repository
 from tta_backend.services import admission, cube_cache, frame_store, overlay_store
 from tta_backend.services.artifact_registry import build_artifact_reference
 from tta_backend.services.artifact_store import artifact_store
-from tta_backend.services.chart_service import ChartLink, ChartService
+from tta_backend.services.chart_service import ChartLink, ChartService, chart_reference
 from tta_backend.services.connector_credential_service import (
     CONNECTOR_TYPE_EARTHDATA,
     CONNECTOR_TYPE_EPA_AQS,

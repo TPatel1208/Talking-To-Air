@@ -1,19 +1,19 @@
-"""The app's models for the agent harness, built through the same gateway and factory as the agents.
+"""The app's models for the agent harness, built through the model factory.
 
-Each role maps to a setting pair the agents already use:
+Each role maps to a setting pair:
 
-- ``explore`` and ``supervisor``: the supervisor's model, the stronger tier.
-- ``agent_step``: the earthdata agent's model, the cheaper tier.
+- ``explore`` and ``supervisor``: ``SUPERVISOR_MODEL_PROVIDER`` and ``LLM_MODEL``, the stronger tier.
+- ``agent_step``: ``EARTHDATA_AGENT_PROVIDER`` and ``EARTHDATA_AGENT_MODEL``, the cheaper tier.
 
 No fallback model is configured today, so no choice has fallbacks.
 
 The harness retries model calls itself, so these models are built with the SDK's own retries off.
 
-Prompt caching is on for portkey Claude models only, the same rule the agents' cached system prompts
-follow. The harness marks the system prompt. The conversation is marked here, in the payload after
-langchain's conversion, since langchain_openai drops ``cache_control`` from assistant and tool messages:
-the final message's last content block gets a breakpoint. With the top-level ``cache_control`` the
-factory already sends, a request holds three breakpoints, within Anthropic's four.
+Prompt caching is on for portkey Claude models only. The harness marks the system prompt. The
+conversation is marked here, in the payload after langchain's conversion, since langchain_openai drops
+``cache_control`` from assistant and tool messages: the final message's last content block gets a
+breakpoint. With the top-level ``cache_control`` the factory already sends, a request holds three
+breakpoints, within Anthropic's four.
 """
 from __future__ import annotations
 

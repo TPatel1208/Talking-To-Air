@@ -34,8 +34,7 @@ CsvRow = list[Any]
 # ``asyncio.to_thread`` submits to the process-wide default ThreadPoolExecutor
 # -- sized ``min(32, cpu_count + 4)``, so six threads on a two-core container
 # -- and that pool is also where every request's JWT verification runs
-# (api.py), alongside handle opens, overlay reads, and the to_thread sites in
-# plot_tools/stat_tools. Ten concurrent exports, each holding a thread for a
+# (api.py), alongside handle opens and overlay reads. Ten concurrent exports, each holding a thread for a
 # multi-second grid reduction, would saturate it and leave arriving requests
 # queued at authentication: the freeze relocated from the event loop to the
 # executor rather than being bounded.
@@ -171,6 +170,31 @@ async def _replay_then_stream(first: bytes | None, rest: AsyncIterator[bytes]) -
     except Exception:
         logger.exception("export_stream_failed_mid_stream", extra={"_category": CATEGORY_CONTRACT})
         yield f"\n# EXPORT INCOMPLETE — {CATEGORY_CONTRACT}\n".encode("utf-8")
+
+
+def _series_from_table(table: Any, variable: str) -> tuple[list[str], list[float]]:
+    """A point-sampled table as a sorted (times, values) series: the time
+    column (``time``/``date``, else the first column) paired with
+    ``variable``'s column (else the first remaining column)."""
+    import pandas as pd
+
+    columns = table.column_names
+    time_col = next((c for c in ("time", "date") if c in columns), columns[0])
+    value_col = variable if variable in columns else next((c for c in columns if c != time_col), None)
+    if value_col is None:
+        return [], []
+
+    times_raw = table.column(time_col).to_pylist()
+    values_raw = table.column(value_col).to_pylist()
+    paired = sorted(
+        (pd.Timestamp(t).isoformat(), round(float(v), 6))
+        for t, v in zip(times_raw, values_raw, strict=True)
+        if v is not None
+    )
+    if not paired:
+        return [], []
+    times, values = zip(*paired, strict=True)
+    return list(times), list(values)
 
 
 class _HeatmapGrid(NamedTuple):
@@ -488,35 +512,28 @@ class ExportService:
         if region_name:
             region = await _resolve_export_region(region_name)
 
-        return await _to_export_thread(
-            self._narrow_data_array, ds, export, source_handles[0], region, collapse_to_2d,
-        )
+        return await _to_export_thread(self._narrow_data_array, ds, export, region, collapse_to_2d)
 
     def _narrow_data_array(
-        self, ds: xr.Dataset, export: dict[str, Any], handle: str,
-        region: dict[str, Any] | None, collapse_to_2d: bool,
+        self, ds: xr.Dataset, export: dict[str, Any], region: dict[str, Any] | None, collapse_to_2d: bool,
     ) -> xr.DataArray:
         """The synchronous half of :meth:`_export_data_array`. Runs on a
         worker thread; raises exactly what it raised on the loop, since
         ``to_thread`` re-raises into the awaiting caller unchanged."""
         from tta_backend.domain.aggregation.aggregation_service import AggregationService, VariableChoiceRequired
-        from tta_backend.services import variable_choice_registry
-        from tta_backend.tools.satellite_tools.plot_tools import _normalize_longitudes
+        from tta_backend.domain.earthdata.opening import normalize_longitudes
         from tta_backend.domain.masking.geometry import mask_data_by_geometry, sel_bounds
 
         from tta_backend.earthdata_mcp.results import MCPToolError
 
-        # Pass the choice recorded for the source handle so a stored payload whose ``variable`` wasn't
-        # persisted (or was persisted as None) still inherits the science
-        # variable recorded for this handle at retrieval time. If it
-        # can't be resolved -- a genuinely multi-science-variable file with no
-        # recorded choice -- surface it as the export path's own ValueError
+        # A variable that can't be resolved -- a multi-science-variable file
+        # with no variable on the payload -- surfaces as the export path's own ValueError
         # (a clean 422) instead of letting the structured MCPToolError escape
         # mid-stream on the CSV path, where the response has already started
         # and no handler can turn it into a proper error response.
         try:
             da = AggregationService().to_dataarray(
-                ds, variable=export.get("variable"), recorded_variable=variable_choice_registry.get(handle),
+                ds, variable=export.get("variable"),
             )
         except VariableChoiceRequired as exc:
             # A download has no chat to show the variable picker in, so
@@ -525,7 +542,7 @@ class ExportService:
         except MCPToolError as exc:
             raise ValueError(exc.message) from exc
         lat_coord, lon_coord = self._export_lat_lon_names(da)
-        da = _normalize_longitudes(da, lon_coord)
+        da = normalize_longitudes(da, lon_coord)
 
         bounds = None
         if region:
@@ -758,7 +775,6 @@ class ExportService:
 
     async def _point_sample_timeseries_rows(self, export: dict[str, Any], tools: dict[str, Any]) -> list[CsvRow]:
         from tta_backend.services.open_handle import open_handle
-        from tta_backend.tools.satellite_tools.retrieval_tools import _series_from_table
 
         source_handles = export.get("source_handles") or []
         if not source_handles:

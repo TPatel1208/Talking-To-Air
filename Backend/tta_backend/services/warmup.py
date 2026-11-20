@@ -20,8 +20,8 @@ the dask half as already paid for and drop it:
   threaded scheduler. That covers 25 modules, none of them ``dask.array``. The
   34 ``dask.array.*`` modules a reduction actually goes through are untouched
   by it, so ``_warm_dask_reduction`` below is doing the same job it always was.
-* ``plot_tools`` imports ``PIL.Image`` at module scope, which is the expensive
-  part of PIL; only 8 format plugins are still lazy.
+* ``PIL`` is imported lazily by the overlay renderer, so the first map's
+  encode pays for it unless ``_warm_png_encoder`` below already has.
 
 Warms by *performing* a miniature version of the real work rather than by
 importing a hand-listed set of module names. A list would be written against
@@ -94,10 +94,8 @@ def _warm_png_encoder() -> None:
     """Encode one tiny RGBA frame, which is what the map-overlay renderer does
     at the end of every plot.
 
-    Only ~0.01 s and 8 format plugins now that ``plot_tools`` imports
-    ``PIL.Image`` at module scope. Kept anyway: it is cheap enough that the
-    saving does not have to be large to be worth taking, and dropping it would
-    leave the encoder as the one step of the render path nothing warms.
+    The overlay renderer imports ``PIL`` lazily, so without this the first
+    map's encode pays for the import.
 
     Deliberately to an in-memory buffer: warming must not write into the
     overlay store, which is real, served content keyed by chart id.

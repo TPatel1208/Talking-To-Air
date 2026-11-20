@@ -34,7 +34,8 @@ class ProvenanceEndpointTests(unittest.IsolatedAsyncioTestCase):
         import httpx
         import tta_backend.api as api
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
-        from tta_backend.earthdata_mcp.toolset import load_earthdata_tools
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.earthdata_mcp.workspace import bind_workspace
         from tta_backend.infrastructure.settings import Settings
         from tta_backend.utils.streaming import current_user_id
 
@@ -110,7 +111,7 @@ class ProvenanceEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.server.stop)
 
         settings = Settings(earthdata_mcp_url=self.server.url, earthdata_mcp_token=None)
-        self.api.app.state.earthdata_mcp_tools = await load_earthdata_tools(settings, current_user_id)
+        self.api.app.state.earthdata_mcp_tools = bind_workspace(await load_raw_mcp_tools(settings), current_user_id)
         # Provenance/citations/methods/export.nc all read tools through
         # earthdata_mcp_manager.
         self.api.app.state.earthdata_mcp_manager = SimpleNamespace(
@@ -297,7 +298,8 @@ class ProvenanceEndpointTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_export_netcdf_422s_when_the_mcp_cannot_convert_the_handle(self):
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
-        from tta_backend.earthdata_mcp.toolset import load_earthdata_tools
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.earthdata_mcp.workspace import bind_workspace
         from tta_backend.infrastructure.settings import Settings
         from tta_backend.utils.streaming import current_user_id
 
@@ -308,7 +310,7 @@ class ProvenanceEndpointTests(unittest.IsolatedAsyncioTestCase):
         server.start()
         self.addCleanup(server.stop)
         settings = Settings(earthdata_mcp_url=server.url, earthdata_mcp_token=None)
-        broken_tools = await load_earthdata_tools(settings, current_user_id)
+        broken_tools = bind_workspace(await load_raw_mcp_tools(settings), current_user_id)
 
         async def fake_get_chart(chart_id):
             return self.chart_payload

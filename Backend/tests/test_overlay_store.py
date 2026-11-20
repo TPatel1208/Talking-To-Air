@@ -188,13 +188,13 @@ class RenderPathTests(OverlayStoreTestCase):
     def render(self, offset: float):
         import numpy as np
 
-        from tta_backend.tools.satellite_tools import plot_tools
+        from tta_backend.services import overlay_store
         from tta_backend.utils.colormaps import resolve
 
         lats = np.linspace(30.0, 33.0, 8)
         lons = np.linspace(-100.0, -96.0, 10)
         values = np.linspace(offset, offset + 1.0, lats.size * lons.size).reshape(lats.size, lons.size)
-        fields = plot_tools._render_and_store_overlay(lats, lons, values, resolve("NO2").lut, 0.0, 2.0)
+        fields = overlay_store.render_and_store(lats, lons, values, resolve("NO2").lut, 0.0, 2.0)
         self.assertIn("_path", fields, "the overlay render failed, so this proves nothing")
         return fields["_path"]
 
@@ -215,13 +215,14 @@ class RenderPathTests(OverlayStoreTestCase):
         import numpy as np
 
         from tta_backend.services.overlay_store import read_overlay
-        from tta_backend.tools.satellite_tools import plot_tools
+        from tta_backend.domain.charts import media
+        from tta_backend.services import overlay_store
         from tta_backend.utils.colormaps import resolve
 
         lats = np.linspace(30.0, 33.0, 8)
         lons = np.linspace(-100.0, -96.0, 10)
         values = np.linspace(0.5, 1.5, lats.size * lons.size).reshape(lats.size, lons.size)
-        fields = plot_tools._render_and_store_overlay(lats, lons, values, resolve("NO2").lut, 0.0, 2.0)
+        fields = overlay_store.render_and_store(lats, lons, values, resolve("NO2").lut, 0.0, 2.0)
 
         self.assertIsNotNone(read_overlay(fields["_values"]["_path"]))
         # The raster holds the reprojected grid, whose bilinear resampling can
@@ -232,8 +233,8 @@ class RenderPathTests(OverlayStoreTestCase):
         payload = {"chart_id": "c1", "type": "heatmap", "overlay": fields}
         # A chart drawn before rasters were stored.
         old_payload = {"chart_id": "c2", "type": "heatmap", "overlay": {"_path": fields["_path"]}}
-        plot_tools._wire_overlay_urls(payload)
-        plot_tools._wire_overlay_urls(old_payload)
+        media.wire_overlay_urls(payload)
+        media.wire_overlay_urls(old_payload)
 
         self.assertTrue(payload["overlay"]["rescalable"])
         self.assertEqual(old_payload["overlay"]["url"], "/chart/c2/overlay.png")

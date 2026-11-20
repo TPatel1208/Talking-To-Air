@@ -5,9 +5,9 @@ import json
 import unittest
 from unittest.mock import Mock, patch
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from tta_backend.config.model_factory import _portkey_chat_class, build_chat_model, cacheable_system_prompt
+from tta_backend.config.model_factory import _portkey_chat_class, build_chat_model
 from tta_backend.harness.models import ModelChoice, NamedModel, system_message
 from tta_backend.infrastructure.settings import Settings
 from tta_backend.services.harness_models import (
@@ -110,14 +110,13 @@ class AppModelsTests(unittest.TestCase):
         self.assertFalse(choices["agent_step"].prompt_cache)
         self.assertEqual(calls[0][0], "portkey")
 
-    def test_the_caching_rule_is_the_agents_cached_system_prompt_rule(self):
-        for provider, model in [
-            ("portkey", CLAUDE), ("portkey", "@gw/anthropic.CLAUDE-haiku-4-5"),
-            ("portkey", "@gw/openai.gpt-5.5"), ("google", "claude-lookalike"), ("groq", "llama-4"),
+    def test_only_claude_through_portkey_takes_cache_breakpoints(self):
+        for provider, model, expected in [
+            ("portkey", CLAUDE, True), ("portkey", "@gw/anthropic.CLAUDE-haiku-4-5", True),
+            ("portkey", "@gw/openai.gpt-5.5", False), ("google", "claude-lookalike", False), ("groq", "llama-4", False),
         ]:
             with self.subTest(provider=provider, model=model):
-                marked = isinstance(cacheable_system_prompt("x", provider, model), SystemMessage)
-                self.assertEqual(takes_cache_breakpoints(provider, model), marked)
+                self.assertEqual(takes_cache_breakpoints(provider, model), expected)
 
     def test_the_cached_model_is_built_as_the_factory_builds_a_portkey_model(self):
         plain = build_chat_model("portkey", CLAUDE, SETTINGS, agent_type="supervisor")

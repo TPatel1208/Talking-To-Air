@@ -357,85 +357,6 @@ class ModelFactoryWiringTests(unittest.TestCase):
         )
 
 
-class AgentStepTimingTests(unittest.IsolatedAsyncioTestCase):
-    """``agent_step`` covers what ``llm_call`` cannot: checkpointer writes and
-    graph overhead. The difference between the two separates "the model was
-    slow" from "we were slow around it"."""
-
-    def _agent(self, chunks):
-        class FakeAgent:
-            async def astream(self, _input, config=None, stream_mode=None):
-                for chunk in chunks:
-                    yield chunk
-
-        return FakeAgent()
-
-    async def _drain(self, agent):
-        from tta_backend.utils.streaming import stream_response
-
-        return [event async for event in stream_response(agent, "hi", "thread-1")]
-
-    async def test_a_superstep_is_recorded_per_updates_chunk(self):
-        agent = self._agent(
-            [("updates", {"model": {"messages": []}}), ("updates", {"tools": {"messages": []}})]
-        )
-
-        before = _phase_samples("agent_step")
-        await self._drain(agent)
-
-        self.assertEqual(_phase_samples("agent_step")[0] - before[0], 2)
-
-    async def test_the_node_that_produced_the_step_is_logged(self):
-        """Which node the time went to is the whole point -- 'the turn was
-        slow' is not actionable, 'the model node was slow' is."""
-        agent = self._agent([("updates", {"model": {"messages": []}})])
-
-        with self.assertLogs("tta_backend.infrastructure.phase_timing", level="INFO") as captured:
-            await self._drain(agent)
-
-        record = next(r for r in captured.records if r._phase == "agent_step")
-        self.assertEqual(record._node, "model")
-
-    async def test_a_silent_step_is_distinguishable_from_a_streaming_one(self):
-        """A node that streamed nothing for 107s and then delivered a finished
-        message was blocked on one provider call; a node that streamed
-        throughout was working. Identical durations, opposite diagnoses."""
-        from langchain_core.messages import AIMessageChunk
-
-        agent = self._agent(
-            [
-                ("messages", (AIMessageChunk(content="tok"), {})),
-                ("messages", (AIMessageChunk(content="en"), {})),
-                ("updates", {"model": {"messages": []}}),
-                ("updates", {"tools": {"messages": []}}),
-            ]
-        )
-
-        with self.assertLogs("tta_backend.infrastructure.phase_timing", level="INFO") as captured:
-            await self._drain(agent)
-
-        steps = [r for r in captured.records if r._phase == "agent_step"]
-        self.assertEqual(steps[0]._streamed_chunks, 2)
-        # The counter resets per superstep, or every later step inherits the
-        # first one's tokens and no step ever reads as silent.
-        self.assertEqual(steps[1]._streamed_chunks, 0)
-
-    async def test_a_multi_node_chunk_is_charged_once(self):
-        """Charging the gap to each node would inflate the histogram by the
-        fan-out, making a parallel superstep look like several slow ones."""
-        agent = self._agent(
-            [("updates", {"model": {"messages": []}, "tools": {"messages": []}})]
-        )
-
-        before = _phase_samples("agent_step")
-        with self.assertLogs("tta_backend.infrastructure.phase_timing", level="INFO") as captured:
-            await self._drain(agent)
-
-        self.assertEqual(_phase_samples("agent_step")[0] - before[0], 1)
-        record = next(r for r in captured.records if r._phase == "agent_step")
-        self.assertIn(",", record._node)
-
-
 class PhaseVocabularyTests(unittest.TestCase):
     def test_the_new_phases_are_pre_declared_at_zero(self):
         """Prometheus pulls: a phase that has not run yet must still exist as
@@ -444,7 +365,7 @@ class PhaseVocabularyTests(unittest.TestCase):
 
         rendered = render_prometheus_metrics().decode()
 
-        for phase in ("llm_call", "llm_retry_sleep", "agent_step"):
+        for phase in ("llm_call", "llm_retry_sleep"):
             self.assertIn(
                 f'pipeline_phase_duration_seconds_count{{phase="{phase}"}}',
                 rendered,
@@ -705,8 +626,8 @@ class AgentAttributionTests(unittest.TestCase):
 
 
 class AgentTypeWiringTests(unittest.TestCase):
-    """Each agent must declare itself at the one seam that builds its model;
-    an agent that forgets is silently attributed to "unknown"."""
+    """Each role must declare itself at the one seam that builds its model;
+    a role that forgets is silently attributed to "unknown"."""
 
     def _agent_type_of(self, model):
         from tta_backend.utils.llm_timing import LlmTimingCallback
@@ -725,27 +646,6 @@ class AgentTypeWiringTests(unittest.TestCase):
         )
 
         self.assertEqual(self._agent_type_of(model), "satellite")
-
-    def test_every_agent_declares_a_vocabulary_value_that_joins(self):
-        """The values must match AGENT_REQUESTS_TOTAL's, or tokens-per-agent-
-        call needs a relabel to join. Read off the real build functions rather
-        than restated here, so renaming one and not the other fails."""
-        import re
-
-        expected = {
-            "tta_backend/agents/earthdata_agent.py": "satellite",
-            "tta_backend/agents/ground_sensor_agent.py": "ground_sensor",
-            "tta_backend/agents/supervisor_agent.py": "supervisor",
-        }
-        root = os.path.dirname(TESTS_DIR)
-        for relative, agent_type in expected.items():
-            source = open(os.path.join(root, relative), encoding="utf-8").read()
-            found = re.findall(r"build_chat_model\([^)]*agent_type=\"([^\"]+)\"", source)
-            self.assertEqual(
-                found,
-                [agent_type],
-                f"{relative} does not declare agent_type={agent_type!r} exactly once",
-            )
 
 
 if __name__ == "__main__":

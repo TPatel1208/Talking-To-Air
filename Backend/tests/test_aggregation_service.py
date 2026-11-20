@@ -582,37 +582,27 @@ class AggregationServiceTests(unittest.TestCase):
         self.assertEqual(da.name, "Aerosol_Optical_Depth")
         self.assertEqual(float(da.values[0, 0]), 2.0)
 
-    def test_to_dataarray_inherits_the_retrieval_recorded_choice_via_handle(self):
+    def test_to_dataarray_uses_a_recorded_choice(self):
         from tta_backend.domain.aggregation.aggregation_service import AggregationService
-        from tta_backend.services import variable_choice_registry
-
-        variable_choice_registry._choices.clear()
-        variable_choice_registry._choices["obs_1"] = ("Cloud_Fraction", float("inf"))
-        self.addCleanup(variable_choice_registry._choices.clear)
 
         ds = self.xr.Dataset({
             "Cloud_Fraction": (("lat", "lon"), [[1.0]]),
             "Aerosol_Optical_Depth": (("lat", "lon"), [[2.0]]),
         })
 
-        da = AggregationService().to_dataarray(ds, recorded_variable=variable_choice_registry.get("obs_1"))
+        da = AggregationService().to_dataarray(ds, recorded_variable="Cloud_Fraction")
 
         self.assertEqual(da.name, "Cloud_Fraction")
 
     def test_to_dataarray_explicit_variable_wins_over_a_recorded_choice(self):
         from tta_backend.domain.aggregation.aggregation_service import AggregationService
-        from tta_backend.services import variable_choice_registry
-
-        variable_choice_registry._choices.clear()
-        variable_choice_registry._choices["obs_1"] = ("Cloud_Fraction", float("inf"))
-        self.addCleanup(variable_choice_registry._choices.clear)
 
         ds = self.xr.Dataset({
             "Cloud_Fraction": (("lat", "lon"), [[1.0]]),
             "Aerosol_Optical_Depth": (("lat", "lon"), [[2.0]]),
         })
 
-        da = AggregationService().to_dataarray(ds, recorded_variable=variable_choice_registry.get("obs_1"), variable="Aerosol_Optical_Depth")
+        da = AggregationService().to_dataarray(ds, recorded_variable="Cloud_Fraction", variable="Aerosol_Optical_Depth")
 
         self.assertEqual(da.name, "Aerosol_Optical_Depth")
 
@@ -622,18 +612,13 @@ class AggregationServiceTests(unittest.TestCase):
         groups down to bare leaf names -- so resolution has to match on the
         leaf, or a registered TEMPO retrieval refuses its own recorded choice."""
         from tta_backend.domain.aggregation.aggregation_service import AggregationService
-        from tta_backend.services import variable_choice_registry
-
-        variable_choice_registry._choices.clear()
-        variable_choice_registry._choices["obs_1"] = ("product/vertical_column_troposphere", float("inf"))
-        self.addCleanup(variable_choice_registry._choices.clear)
 
         ds = self.xr.Dataset({
             "vertical_column_troposphere": (("lat", "lon"), [[1.0]]),
             "weight": (("lat", "lon"), [[2.0]]),
         })
 
-        da = AggregationService().to_dataarray(ds, recorded_variable=variable_choice_registry.get("obs_1"))
+        da = AggregationService().to_dataarray(ds, recorded_variable="product/vertical_column_troposphere")
 
         self.assertEqual(da.name, "vertical_column_troposphere")
 
@@ -1300,18 +1285,6 @@ class QaPassRateCounterTests(unittest.TestCase):
             )
         self.assertEqual(raised.exception.category, CATEGORY_NO_DATA)
         self.assertIn("does not overlap", raised.exception.message)
-
-    def test_the_map_status_names_a_no_data_refusal_for_what_it_is(self):
-        from tta_backend.earthdata_mcp.results import CATEGORY_NO_DATA
-        from tta_backend.tools.satellite_tools.plot_tools import _resolve_failure_status
-
-        self.assertEqual(
-            _resolve_failure_status({"category": CATEGORY_NO_DATA, "message": "x"}), "No data in the requested area.",
-        )
-        self.assertEqual(
-            _resolve_failure_status({"category": "dimension_choice_required", "message": "x"}),
-            "Visualization needs a variable or dimension choice.",
-        )
 
     def test_apply_quality_mask_counts_the_pixels_it_checked_and_the_pixels_that_passed(self):
         """The counters come back from the same ``.where()`` condition the mask

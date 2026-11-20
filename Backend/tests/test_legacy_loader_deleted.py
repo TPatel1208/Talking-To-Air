@@ -16,6 +16,21 @@ DELETED_MODULES = (
     "tta_backend.services.async_harmony_service",
     "tta_backend.utils.earthaccess_client",
     "tta_backend.utils.data_utils",
+    # The chat system the agent harness replaced.
+    "tta_backend.agents",
+    "tta_backend.tools",
+    "tta_backend.preprocessing",
+    "tta_backend.config.supervisor_prompt",
+    "tta_backend.config.earthdata_agent_prompt",
+    "tta_backend.config.ground_sensor_agent_prompt",
+    "tta_backend.services.chat_stream_service",
+    "tta_backend.services.dispatch_executor",
+    "tta_backend.services.subagent_dispatch",
+    "tta_backend.services.intent_router",
+    "tta_backend.services.history_service",
+    "tta_backend.models.agent_request",
+    "tta_backend.models.agent_result",
+    "tta_backend.earthdata_mcp.toolset",
 )
 
 

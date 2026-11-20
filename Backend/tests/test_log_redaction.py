@@ -143,7 +143,7 @@ class BackendLogLineTests(_LoggingSandbox):
             "error": ["Email and/or key are invalid."],
         }
 
-        logging.getLogger("tta_backend.tools.ground_sensor_tools.epa_aqs_tools").warning(
+        logging.getLogger("tta_backend.domain.monitors.aqs").warning(
             "aqs_error endpoint=%s header=%r", "list/states", header,
         )
 

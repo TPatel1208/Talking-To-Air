@@ -109,10 +109,11 @@ from tta_backend.infrastructure.metrics import (
     set_db_pool_connections_active,
 )
 from tta_backend.utils.process_gauges import refresh_process_gauges
-from tta_backend.tools.ground_sensor_tools.epa_aqs_tools import (
+from tta_backend.domain.monitors.aqs import (
+    AqsCredential,
     AqsCredentialsRejected,
     AqsUnavailable,
-    validate_aqs_credentials,
+    validate_credentials,
 )
 from tta_backend.utils.streaming import current_user_id, iter_with_user_id, user_id_context
 
@@ -154,8 +155,8 @@ async def _on_earthdata_mcp_ready(tools: dict[str, Any]) -> None:
 # last_used_at coalescing are only meaningful as process-lifetime state, and
 # the connector endpoints below invalidate it directly on re-paste/disconnect.
 edl_credential_injector = EdlCredentialInjector(settings)
-# The same instance epa_aqs_tools resolves through, so invalidating it here
-# reaches the AQS client.
+# The same instance the chat host resolves monitor credentials through, so
+# invalidating it here reaches the next monitor call.
 aqs_credential_injector = get_aqs_credential_injector()
 earthdata_mcp_manager = EarthdataMCPConnectionManager(
     settings, current_user_id, on_ready=_on_earthdata_mcp_ready, edl_injector=edl_credential_injector,
@@ -686,6 +687,13 @@ async def set_connector_token_endpoint(connector_type: ConnectorType, req: SetCo
     )
     _invalidate_connector_cache(connector_type, request.state.current_user.id)
     return _connector_view(entry, row)
+
+
+async def validate_aqs_credentials(email: str, key: str) -> None:
+    """One live EPA call on the pair, never answered from the cache.
+
+    Raises AqsCredentialsRejected for a bad pair, AqsUnavailable when EPA gives no verdict."""
+    await validate_credentials(AqsCredential(email, key))
 
 
 @app.put("/connectors/{connector_type}/credentials")

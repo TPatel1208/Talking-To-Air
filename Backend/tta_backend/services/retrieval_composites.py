@@ -1,10 +1,8 @@
 """
 services/retrieval_composites.py
 ==================================
-Backend composites over the earthdata-retrieval MCP that absorb the two
-ergonomic hazards of durable retrieval: an LLM burning turns polling job
-status (await_retrieval), and an LLM free-running an expensive retrieval
-(safe_retrieve).
+Waiting on an earthdata-retrieval job backend-side: ``await_retrieval`` polls
+its status until it reaches a terminal state, narrating each poll.
 """
 from __future__ import annotations
 
@@ -15,45 +13,27 @@ from typing import Any
 from langchain_core.tools import BaseTool
 
 from tta_backend.infrastructure.settings import Settings, get_settings
-from tta_backend.config.workflow_stages import STAGE_ESTIMATE, STAGE_PROGRESS, STAGE_SUBMIT
-from tta_backend.datasets.registry import known_quality_flag_vars
+from tta_backend.config.workflow_stages import STAGE_PROGRESS
 from tta_backend.domain.earthdata.retrieval import (
-    PAUSED_NOTE,
     PAUSED_STATUS,
     POLL_TRANSIENT_FAILURE_LIMIT,
     TERMINAL_STATUSES,
     annotate_paused,
 )
-from tta_backend.domain.earthdata.retrieval import normalize_time_range as _normalize_time_range
-from tta_backend.domain.earthdata.retrieval import pinned_companion_variables as _pinned_companion_variables
-from tta_backend.domain.earthdata.retrieval import supports_variable_subsetting as _supports_variable_subsetting
-from tta_backend.domain.earthdata.retrieval import time_span_days as _parse_time_span_days
 from tta_backend.earthdata_mcp.results import (
-    CATEGORY_CONTRACT,
     CATEGORY_PROVIDER_UNAVAILABLE,
-    CATEGORY_TOO_LARGE,
     MCPToolError,
     parse_tool_result,
 )
-from tta_backend.services import retrieval_narration, scope_registry
-from tta_backend.services import variable_choice_registry
 from tta_backend.infrastructure.metrics import observe_harmony_fetch
-from tta_backend.utils.streaming import emit_job_progress, emit_status
+from tta_backend.utils.streaming import emit_status
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "PAUSED_NOTE",
-    "PAUSED_STATUS",
-    "POLL_TRANSIENT_FAILURE_LIMIT",
-    "TERMINAL_STATUSES",
     "RetrievalError",
     "RetrievalTimeoutError",
-    "_pinned_companion_variables",
-    "annotate_paused",
     "await_retrieval",
-    "point_timeseries",
-    "safe_retrieve",
 ]
 
 
@@ -78,9 +58,9 @@ async def await_retrieval(
 ) -> dict[str, Any]:
     """Poll get_retrieval_status backend-side until the job reaches a terminal state.
 
-    Spends one model turn instead of a polling loop: backs off from
-    poll_min to poll_max seconds, emits a job_progress SSE event each poll,
-    and returns the terminal status dict (including obs_handle on success).
+    Backs off from poll_min to poll_max seconds, emits a status line each
+    poll, and returns the terminal status dict (including obs_handle on
+    success).
     A failed/cancelled job is returned, not raised — the MCP's own stage/
     provider-prefixed error string is the caller's answer, verbatim.
 
@@ -127,14 +107,6 @@ async def await_retrieval(
         consecutive_poll_failures = 0
         status = data.get("status", "")
         progress = data.get("progress")
-        emit_job_progress(
-            job_handle,
-            status,
-            progress,
-            data.get("phase"),
-            data.get("message"),
-            note=data.get("note"),
-        )
         if status == PAUSED_STATUS:
             emit_status(
                 "Retrieval paused by the data provider — the request may be too large.",
@@ -151,25 +123,11 @@ async def await_retrieval(
         # does: a cancel carries no phase, or a stale one, and a "cancelled"
         # line reading "materializing" is a contradiction.
         label = status if status in TERMINAL_STATUSES else (data.get("phase") or status)
-        # What the wait is *for*, recorded at submission. None for a job this
-        # process didn't submit (open_handle's rematerialize path), which
-        # degrades to the wording this line always had.
-        subject = retrieval_narration.describe(job_handle) or "data"
-        emit_status(f"Retrieving {subject} — {label}...", stage=STAGE_PROGRESS, detail=progress)
+        emit_status(f"Retrieving data — {label}...", stage=STAGE_PROGRESS, detail=progress)
         if status in TERMINAL_STATUSES:
             if status == "ready":
                 # Only successful fetches, so the histogram means "download time".
                 observe_harmony_fetch(loop.time() - started)
-                # Carry the job's variable choice and requested scope onto the
-                # resolved handle, so later plot/stat calls inherit the choice
-                # and can disclose any scope substitution.
-                handle = data.get("obs_handle") or data.get("cube_handle")
-                variable_choice_registry.finalize(job_handle, handle)
-                scope_registry.finalize(job_handle, handle)
-            # A narration describes the wait, and the wait is over. No
-            # finalize onto the result handle: unlike the two registries
-            # above, nothing downstream reads this against a result.
-            retrieval_narration.discard(job_handle)
             return data
 
         if loop.time() >= deadline:
@@ -183,205 +141,3 @@ async def await_retrieval(
 
         await asyncio.sleep(interval)
         interval = min(interval * 2, settings.await_retrieval_poll_max_seconds)
-
-
-async def safe_retrieve(
-    dataset_handle: str,
-    aoi_handle: str,
-    time_range: str,
-    variables: list[str],
-    tools: dict[str, BaseTool],
-    *,
-    output_format: str | None = None,
-    confirmed: bool = False,
-    settings: Settings | None = None,
-) -> dict[str, Any]:
-    """Run estimate -> gate -> retrieve as one deterministic call.
-
-    The soft/hard cap numbers live in config, not prompts, so neither the
-    model nor a persuasive user can talk past the guardrail:
-
-    - at or below the soft cap: proceeds automatically.
-    - between the soft and hard cap: pauses for confirmation unless the
-      caller already has one (``confirmed=True``, e.g. a retry after the
-      supervisor relayed the user's approval).
-    - above the hard cap: refused unconditionally, even if ``confirmed``.
-    """
-    settings = settings or get_settings()
-    time_range = _normalize_time_range(time_range)
-    emit_status("Estimating retrieval size...", stage=STAGE_ESTIMATE)
-    estimate_raw = await tools["estimate_retrieval_size"].ainvoke({
-        "dataset_handle": dataset_handle,
-        "aoi_handle": aoi_handle,
-        "time_range": time_range,
-    })
-    estimate = parse_tool_result(estimate_raw)
-    estimated_bytes = estimate.get("estimated_bytes")
-
-    # An absent estimate must not sail past the caps as if it were zero
-    # bytes — "couldn't price it" is not "free". Treat it like the
-    # between-caps case: pause for confirmation, saying honestly that the
-    # size is unknown (the bundle-open size gate still backstops at open
-    # time, but only after the provider has already done the work).
-    if estimated_bytes is None:
-        if not confirmed:
-            return {
-                "status": "needs_confirmation",
-                "estimated_bytes": None,
-                "message": (
-                    "The provider could not estimate this retrieval's size, so the "
-                    "size guardrail cannot vet it. Reply to confirm proceeding "
-                    "anyway, or narrow the area of interest, time range, or "
-                    "variable list first."
-                ),
-            }
-    elif estimated_bytes > settings.retrieval_hard_cap_bytes:
-        return {
-            "status": "refused",
-            "estimated_bytes": estimated_bytes,
-            "message": (
-                f"Estimated retrieval size (~{estimated_bytes:,} bytes) exceeds the "
-                f"{settings.retrieval_hard_cap_bytes:,}-byte hard cap. Narrow the "
-                "area of interest, time range, or variable list and try again."
-            ),
-        }
-
-    if estimated_bytes is not None and estimated_bytes > settings.retrieval_soft_cap_bytes and not confirmed:
-        return {
-            "status": "needs_confirmation",
-            "estimated_bytes": estimated_bytes,
-            "message": (
-                f"Estimated retrieval size (~{estimated_bytes:,} bytes) is above the "
-                f"{settings.retrieval_soft_cap_bytes:,}-byte soft cap. Reply to confirm "
-                "or narrow the request."
-            ),
-        }
-
-    emit_status("Submitting retrieval...", stage=STAGE_SUBMIT)
-    # Skip the doomed subset attempt entirely for collections the registry
-    # already knows don't support it (e.g. TROPOMI, MODIS AOD) -- avoids a
-    # wasted failed-subset-then-full-retrieval round trip on every call.
-    subset_variables = variables if _supports_variable_subsetting(variables) else []
-    if subset_variables:
-        subset_variables = [*subset_variables, *_pinned_companion_variables(subset_variables)]
-    subset_raw = await tools["retrieve_subset"].ainvoke({
-        "dataset_handle": dataset_handle,
-        "aoi_handle": aoi_handle,
-        "time_range": time_range,
-        "variables": subset_variables,
-        "output_format": output_format,
-    })
-    subset = parse_tool_result(subset_raw)
-
-    # Record the model's chosen science variable, keyed by this job. Quality
-    # flags don't count as a choice (matched by leaf name), so one science
-    # variable plus its flag is still recorded. Reads the caller's
-    # ``variables``, not ``subset_variables``, so the injected flag doesn't
-    # shift the count.
-    flag_vars = known_quality_flag_vars()
-    science_variables = [v for v in variables if v.rsplit("/", 1)[-1] not in flag_vars]
-    if len(science_variables) == 1:
-        variable_choice_registry.record_pending(subset.get("job_handle"), science_variables[0])
-
-    # Only the time_range is recorded: this path sees an aoi_handle, not a
-    # place name. Region substitution is caught by the dispatch AOI guard.
-    scope_registry.record_pending(subset.get("job_handle"), {"time_range": time_range})
-
-    # What the researcher will be waiting on, for the status line. Everything
-    # here was already computed above and then dropped; the same aoi_handle
-    # limitation the scope record just noted applies, so there is no place
-    # name to offer — the size estimate stands in as the other bound on the
-    # wait.
-    retrieval_narration.record(
-        subset.get("job_handle"),
-        variable=science_variables[0] if len(science_variables) == 1 else None,
-        time_range=time_range,
-        estimated_bytes=estimated_bytes,
-    )
-
-    return {"status": "submitted", "estimated_bytes": estimated_bytes, **subset}
-
-
-async def point_timeseries(
-    dataset_handle: str,
-    location: str,
-    time_range: str,
-    variable: str,
-    tools: dict[str, BaseTool],
-    *,
-    settings: Settings | None = None,
-) -> dict[str, Any]:
-    """Resolve AOI, gate the requested time span, submit a point-sampled
-    timeseries retrieval, and await it to a terminal state — the
-    point-timeseries analogue of safe_retrieve's gate-then-submit shape,
-    chained straight into await_retrieval so the model spends one tool call
-    instead of three.
-
-    Point sampling is always on (this composite's identity is the MCP's
-    AppEEARS-routed point path, never a gridded cube). Raises
-    ``MCPToolError(category="too_large")`` before any MCP call when the
-    requested span exceeds ``settings.retrieval_max_timeseries_days`` — a
-    span gate rather than safe_retrieve's byte-size estimate, since a point
-    series has no size to estimate.
-    """
-    settings = settings or get_settings()
-    time_range = _normalize_time_range(time_range)
-
-    span_days = _parse_time_span_days(time_range)
-    if span_days is not None and span_days > settings.retrieval_max_timeseries_days:
-        raise MCPToolError(
-            CATEGORY_TOO_LARGE,
-            f"Requested time span ({span_days} days) exceeds the "
-            f"{settings.retrieval_max_timeseries_days}-day point-timeseries limit.",
-            suggestion="Narrow the time range and try again.",
-        )
-
-    aoi_raw = await tools["define_area_of_interest"].ainvoke({"location": location})
-    aoi = parse_tool_result(aoi_raw)
-    aoi_handle = aoi.get("handle") or aoi.get("aoi_handle")
-    # An AOI response with no handle used to flow on as None and submit a
-    # retrieval against a null area; off-taxonomy that's a contract violation
-    # the agent should be able to explain, not a silent wrong request.
-    if not aoi_handle:
-        raise MCPToolError(
-            CATEGORY_CONTRACT,
-            "define_area_of_interest returned no area-of-interest handle "
-            "(expected a 'handle' or 'aoi_handle' field), so the point-timeseries "
-            "retrieval can't be located.",
-            suggestion="Try a different phrasing of the location, or a nearby named place.",
-        )
-
-    emit_status("Submitting point timeseries retrieval...", stage=STAGE_SUBMIT)
-    submit_raw = await tools["retrieve_timeseries"].ainvoke({
-        "dataset_handle": dataset_handle,
-        "aoi_handle": aoi_handle,
-        "time_range": time_range,
-        "variables": [variable, *_pinned_companion_variables([variable])],
-        "point_sample": True,
-    })
-    submit = parse_tool_result(submit_raw)
-    # A submit response with no job_handle used to KeyError below off-taxonomy;
-    # classify it so the failure reads as a contract violation naming the tool
-    # and the absent field rather than an opaque traceback.
-    job_handle = submit.get("job_handle")
-    if not job_handle:
-        raise MCPToolError(
-            CATEGORY_CONTRACT,
-            "retrieve_timeseries returned no 'job_handle', so the submitted "
-            "point-timeseries retrieval can't be awaited.",
-            suggestion="Retry the retrieval; if it persists, the product may not support point sampling.",
-        )
-
-    # Record the full requested scope; await_retrieval moves it onto the handle.
-    scope_registry.record_pending(job_handle, {"location": location, "time_range": time_range})
-
-    # This composite awaits inline, so its own status line is the one the
-    # researcher watches. Unlike safe_retrieve it holds the actual place name
-    # (it resolved the AOI itself) but has no size estimate — a point series
-    # has none to quote.
-    retrieval_narration.record(
-        job_handle, variable=variable, location=location, time_range=time_range
-    )
-
-    status = await await_retrieval(job_handle, tools, settings=settings)
-    return {"aoi_handle": aoi_handle, **status}

@@ -22,11 +22,6 @@ STAGE_PROGRESS = "progress"
 STAGE_OPEN = "open"
 STAGE_RENDER = "render"
 STAGE_WORKING = "working"
-# A dispatch item's own lifecycle, emitted by the dispatch executor in
-# the item's narration lane -- the ground agent narrates no stages of its own.
-STAGE_QUEUED = "queued"
-STAGE_RUNNING = "running"
-STAGE_FINISHED = "finished"
 
 ALL_STAGES = (
     STAGE_SEARCH,
@@ -38,7 +33,4 @@ ALL_STAGES = (
     STAGE_OPEN,
     STAGE_RENDER,
     STAGE_WORKING,
-    STAGE_QUEUED,
-    STAGE_RUNNING,
-    STAGE_FINISHED,
 )

@@ -279,7 +279,7 @@ def _daily_row(day: str, mean: float) -> dict:
 
 def _newark_aqs_get(daily_rows: Callable[[dict], list[dict]]):
     """An AQS fake serving the Newark monitor and its NO2 daily rows on every
-    endpoint the current system and the harness's monitor capabilities call."""
+    endpoint the harness's monitor capabilities call."""
 
     def no2(params: dict) -> bool:
         return str(params.get("param", _NO2_PARAM)) == _NO2_PARAM

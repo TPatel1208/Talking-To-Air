@@ -39,13 +39,10 @@ _geocoding_service = None
 
 # Nominatim's usage policy (https://operations.osmfoundation.org/policies/nominatim/)
 # requires an identifying User-Agent naming the application and a means of
-# contact. Reuses AQS_API_EMAIL (already required for EPA AQS API
-# registration) as that contact address instead of adding a second
-# deployment-operator email setting — an unfilled placeholder here isn't just
-# a policy violation, Nominatim's edge actively 403s any User-Agent
-# containing an @example.com/.org/.net address (verified live 2026-07-07),
-# so a real address is required for geocoding to work at all.
-NOMINATIM_USER_AGENT = f"talking-to-air/1.0 (contact: {get_settings().aqs_api_email})"
+# contact. An unfilled placeholder is refused: Nominatim's edge 403s any
+# User-Agent containing an @example.com/.org/.net address, so a real address
+# is required for geocoding to work at all.
+NOMINATIM_USER_AGENT = f"talking-to-air/1.0 (contact: {get_settings().nominatim_contact_email})"
 
 
 def get_geocoding_service() -> "GeocodingService":

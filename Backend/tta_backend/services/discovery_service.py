@@ -86,7 +86,7 @@ def _attach_inventory(result: dict[str, Any]) -> dict[str, Any]:
     untouched (no inventory key), so an empty/thin UMM-Var view (e.g. MODIS AOD)
     honestly shows nothing rather than an invented one.
 
-    Best-effort like plot_tools' evidence path: a malformed live variable
+    Best-effort: a malformed live variable
     record (e.g. a non-string name) degrades to the bare, inventory-less
     result instead of becoming an unhandled 500 — api.py has no generic
     exception handler, only the structured MCPToolError one."""

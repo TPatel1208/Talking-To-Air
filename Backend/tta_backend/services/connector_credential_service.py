@@ -1,7 +1,8 @@
 """Resolves a connected user's decrypted connector secret for per-call
 injection -- the Earthdata token into the workspace-binding wrapper
-(earthdata_mcp/workspace.py), the EPA AQS email + key into the AQS client
-(tools/ground_sensor_tools/epa_aqs_tools.py).
+(earthdata_mcp/workspace.py), the EPA AQS email + key into the harness's
+monitor sources (services/harness_chat.py's ConnectorCredentials). There is
+no application-level fallback: a user without the connector has no secret.
 
 A short-TTL in-process cache holds the *encrypted* row per user; decryption
 stays just-in-time per call, so no decrypted material is cached anywhere.
@@ -73,7 +74,7 @@ class _ConnectorSecretInjector:
 
     async def _resolve_secret(self, user_id: str) -> str | None:
         """Injection policy: connected ∧ unexpired. Anything else returns
-        None so the caller falls back to the shared app credential."""
+        None: the user has no usable secret for this connector."""
         cipher = get_connector_cipher(self._settings)
         if cipher is None:
             return None
@@ -173,6 +174,6 @@ class AqsCredentialInjector(_ConnectorSecretInjector):
 
 @cache
 def get_aqs_credential_injector() -> AqsCredentialInjector:
-    """The one process-wide instance, shared by the AQS client (which
+    """The one process-wide instance, shared by the chat host (which
     resolves through it) and api.py (which invalidates it)."""
     return AqsCredentialInjector(get_settings())

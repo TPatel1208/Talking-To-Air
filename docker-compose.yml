@@ -259,8 +259,7 @@ services:
       SUPABASE_URL: "https://test-project.supabase.co"
       SUPABASE_PUBLISHABLE_KEY: "test-publishable-key"
       GROQ_API_KEY: "test"
-      AQS_API_KEY: "test"
-      AQS_API_EMAIL: "test@test.com"
+      NOMINATIM_CONTACT_EMAIL: "test@test.com"
       DB_HOST: "localhost"
       DB_PORT: "5432"
       DB_NAME: "talking_to_air_memory"
@@ -359,34 +358,23 @@ services:
     profiles: ["benchmark"]
     working_dir: /app
     # Model providers, model ids and their keys come from .env, as for the
-    # backend. Data comes from the in-process fakes, never the real MCP or EPA.
+    # backend. Data comes from the in-process fakes, never the real MCP or EPA;
+    # the harness keeps its stores and checkpoints in memory.
     env_file: .env
     environment:
-      # The supervisor checkpoints in the stack's Postgres; benchmark
-      # conversations land there under the user "benchmark-user".
-      DB_HOST: db
-      DB_PORT: "5432"
-      DB_NAME: talking_to_air_memory
-      DB_USER: postgres
       # Never the live backend's Redis database, whatever .env says.
       REDIS_URL: "redis://redis:6379/14"
-      # Keep Linux bytecode, pytest's cache and the stores out of the mounted
-      # host tree; the stores are scratch here and vanish with the container.
+      # Keep Linux bytecode out of the mounted host tree; the stores are
+      # scratch here and vanish with the container.
       PYTHONDONTWRITEBYTECODE: "1"
       CUBE_STORE_DIR: /tmp/benchmark/cube_store
       OVERLAY_STORE_DIR: /tmp/benchmark/overlay_store/overlays
       FRAME_STORE_DIR: /tmp/benchmark/frame_store
     volumes:
       - ./Backend:/app
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    # --show-capture=no keeps a failure from burying the table under the
-    # captured logs; the table and each case's details are also saved under
-    # Backend/benchmark-results/.
-    command: ["pytest", "tests/test_benchmark.py", "-v", "-s", "-m", "eval", "-p", "no:cacheprovider", "--show-capture=no"]
+    # The table and each case's details are also saved under
+    # Backend/benchmark-results/harness/.
+    command: ["python", "-m", "benchmark.runner", "--system", "harness"]
 
   # ── Frontend tests (Vitest) ───────────────────────────────────────────────────
   #  Run with: docker compose --profile test run --rm frontend-test

@@ -9,8 +9,7 @@ chunk. Both are measured, and neither says anything about the second request
 that arrives while the first is still running.
 
 Nothing did. Every heavy reducer hops to a worker thread via
-``asyncio.to_thread`` (plot_tools, stat_tools, validation_tools,
-comparison_tools) so they genuinely overlap, and the only ceiling was the
+``asyncio.to_thread`` so they genuinely overlap, and the only ceiling was the
 default executor's ``min(32, cpu_count + 4)`` -- a number derived from CPU
 count, which has nothing to do with memory. ``settings.py`` already predicted
 what that costs, next to ``open_max_chunk_bytes``:

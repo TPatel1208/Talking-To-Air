@@ -109,7 +109,7 @@ class AoiCropEquivalenceTests(unittest.TestCase):
         """The stat-tools longitude regression (2026-07-16), re-asserted
         through the crop: a western-hemisphere AOI against a grid published on
         0..360 must still answer, not crop itself into an empty selection."""
-        from tta_backend.tools.satellite_tools.plot_tools import _normalize_longitudes
+        from tta_backend.domain.earthdata.opening import normalize_longitudes as _normalize_longitudes
 
         shifted = _grid(np.arange(20.0, 55.01, 0.5), np.arange(235.0, 300.01, 0.5))
         normalized = _normalize_longitudes(shifted, "lon")
@@ -307,7 +307,7 @@ class AoiCropEquivalenceTests(unittest.TestCase):
         """Story #4: the plot path crops the masked array to the region before
         deriving overlay bounds, so a tighter masked array must land on exactly
         the same extent -- and the same pixel edges the PNG is rendered at."""
-        from tta_backend.tools.satellite_tools.plot_tools import _half_cell, _sel_bounds
+        from tta_backend.domain.masking.geometry import half_cell as _half_cell, sel_bounds as _sel_bounds
 
         da = _continental_grid()
         cropped = _sel_bounds(mask_data_by_geometry(da, SMALL_AOI), "lat", "lon", SMALL_AOI.bounds)
@@ -318,16 +318,6 @@ class AoiCropEquivalenceTests(unittest.TestCase):
         xr.testing.assert_identical(cropped, full)
         self.assertEqual(_half_cell(cropped.lon.values), _half_cell(full.lon.values))
         self.assertEqual(_half_cell(cropped.lat.values), _half_cell(full.lat.values))
-
-    def test_the_crop_helpers_are_one_implementation_not_two_copies(self):
-        """Decision #5: the bounds crop and the pixel-edge half-cell live in
-        domain.masking.geometry as one implementation that plot_tools imports, rather
-        than a tool-module copy that export_service reaches through."""
-        from tta_backend.tools.satellite_tools import plot_tools
-        from tta_backend.domain.masking import geometry
-
-        self.assertIs(plot_tools._sel_bounds, geometry.sel_bounds)
-        self.assertIs(plot_tools._half_cell, geometry.half_cell)
 
 
 if __name__ == "__main__":

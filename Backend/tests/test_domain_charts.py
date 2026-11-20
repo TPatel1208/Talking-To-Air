@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from tta_backend.domain.charts import colormaps, heatmap, monitor_map, profile, provenance, summary, table, timeseries
+from tta_backend.domain.charts import colormaps, heatmap, monitor_map, profile, summary, table, timeseries
 
 
 def field(n_lat: int = 4, n_lon: int = 5, *, lon0: float = -75.0, seed: int = 1) -> xr.DataArray:
@@ -87,13 +87,6 @@ class HeatmapPayloadTests(unittest.TestCase):
         self.assertEqual(heatmap.percentile_bounds(np.array([np.nan])), (0.0, 1.0))
         self.assertEqual(heatmap.percentile_bounds(np.full(4, 2.0)), (1.98, 2.02))
 
-    def test_the_comparison_tool_uses_these_diverging_bounds(self):
-        from tta_backend.tools.satellite_tools import comparison_tools
-
-        self.assertIs(comparison_tools.diverging_bounds, heatmap.diverging_bounds)
-        self.assertIs(comparison_tools.DIVERGING_SCALE_DISCLOSURE, heatmap.DIVERGING_SCALE_DISCLOSURE)
-        self.assertFalse(hasattr(comparison_tools, "_diverging_bounds"))
-
     def test_diverging_bounds_are_centred_on_zero(self):
         low, high = heatmap.diverging_bounds(np.array([-1.0, 0.5, 4.0, np.nan]))
         self.assertEqual(low, -high)
@@ -114,47 +107,7 @@ class HeatmapPayloadTests(unittest.TestCase):
         self.assertTrue(np.isnan(empty.values).all())
 
 
-class OldToolPathTests(unittest.TestCase):
-    """plot_tools builds its payloads through these functions, unchanged."""
-
-    def test_the_plot_tools_heatmap_is_the_domain_heatmap_with_its_colormap(self):
-        from tta_backend.tools.satellite_tools import plot_tools
-        from tta_backend.utils.colormaps import resolve
-
-        da = field(30, 40)
-        old = plot_tools._da_to_heatmap_payload(da, "t", "NO2", "u", diverging=True, value_range=(-1.0, 1.0))
-        new = heatmap.heatmap_payload(
-            da, "t", "NO2", "u", diverging=True, value_range=(-1.0, 1.0), colormap=resolve("NO2", diverging=True),
-        )
-        self.assertEqual(canonical(old), canonical(new))
-
-    def test_the_plot_tools_overlay_is_rendered_through_its_store(self):
-        from tta_backend.tools.satellite_tools import plot_tools
-
-        with mock.patch.object(plot_tools, "_render_and_store_overlay", return_value={"_path": "p"}) as render:
-            payload = plot_tools._da_to_heatmap_payload(field(), "t", "NO2", "u", render_overlay=True)
-        render.assert_called_once()
-        self.assertEqual(payload["overlay"]["_path"], "p")
-
-    def test_reproducibility_matches_with_the_requested_scope_looked_up_by_the_tool(self):
-        from tta_backend.tools.satellite_tools import plot_tools
-
-        da = field()
-        meta = {"aggregation_label": "L", "n_granules": 2, "cadence": "daily", "granule_dates": ["a", "b"]}
-        args = (["obs_1"], da, "R", "agg", {"c": 1}, meta, {"bounds": [-75, 39, -73, 41]}, {"short_name": "S"})
-        with mock.patch.object(plot_tools, "_requested_scope", return_value={"location": "NJ"}):
-            old = plot_tools._attach_reproducibility({"type": "heatmap"}, *args)
-        new = provenance.attach_reproducibility({"type": "heatmap"}, *args, requested_scope={"location": "NJ"})
-        self.assertEqual(canonical(old), canonical(new))
-        self.assertEqual(new["provenance"]["requested_scope"], {"location": "NJ"})
-        self.assertEqual(new["metadata"]["source_handles"], ["obs_1"])
-
-    def test_plot_tools_uses_the_domain_longitude_normaliser(self):
-        from tta_backend.domain.earthdata.opening import normalize_longitudes
-        from tta_backend.tools.satellite_tools import plot_tools
-
-        self.assertIs(plot_tools._normalize_longitudes, normalize_longitudes)
-
+class AppColormapTests(unittest.TestCase):
     def test_the_utils_colormaps_are_the_domain_ones(self):
         from tta_backend.utils import colormaps as app_colormaps
 

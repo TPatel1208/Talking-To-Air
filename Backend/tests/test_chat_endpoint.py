@@ -661,14 +661,14 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         value raster are what a live chart stores."""
         import numpy as np
 
-        from tta_backend.tools.satellite_tools import plot_tools
+        from tta_backend.services import overlay_store
         from tta_backend.utils.colormaps import resolve
 
         lats = np.linspace(30.0, 33.0, 12)
         lons = np.linspace(-100.0, -96.0, 16)
         values = np.linspace(2.0, 9.0, lats.size * lons.size, dtype=np.float32).reshape(lats.size, lons.size)
         overlay = {"bounds": [-100, 30, -96, 33]}
-        overlay.update(plot_tools._render_and_store_overlay(lats, lons, values, resolve("NO2").lut, 3.0, 8.0))
+        overlay.update(overlay_store.render_and_store(lats, lons, values, resolve("NO2").lut, 3.0, 8.0))
         node = {"overlay": overlay, "colormap": {"name": "no2_omi"}}
         if panels:
             return {"chart_id": "chart-1", "type": "heatmap_multi", "panels": [node], "user_id": self.user.id}
@@ -1335,7 +1335,6 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         for name in [
             "http_requests_total",
             "http_request_duration_seconds",
-            "agent_requests_total",
             "harmony_fetch_duration_seconds",
             "harmony_timeouts_total",
             "cache_hits_total",

@@ -24,7 +24,8 @@ class JobsEndpointTests(unittest.IsolatedAsyncioTestCase):
         import httpx
         import tta_backend.api as api
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
-        from tta_backend.earthdata_mcp.toolset import load_earthdata_tools
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.earthdata_mcp.workspace import bind_workspace
         from tta_backend.infrastructure.settings import Settings
         from tta_backend.services.jobs_service import clear_terminal_status_cache
         from tta_backend.utils.streaming import current_user_id
@@ -82,7 +83,7 @@ class JobsEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.server.stop)
 
         settings = Settings(earthdata_mcp_url=self.server.url, earthdata_mcp_token=None)
-        self.api.app.state.earthdata_mcp_tools = await load_earthdata_tools(settings, current_user_id)
+        self.api.app.state.earthdata_mcp_tools = bind_workspace(await load_raw_mcp_tools(settings), current_user_id)
         # Jobs endpoints read tools through earthdata_mcp_manager.
         self.api.app.state.earthdata_mcp_manager = SimpleNamespace(
             state="ready", tools=self.api.app.state.earthdata_mcp_tools,
@@ -169,7 +170,8 @@ class JobsEndpointTests(unittest.IsolatedAsyncioTestCase):
         handlers are already baked into a running server) and swaps it onto
         app.state for the duration of the call."""
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
-        from tta_backend.earthdata_mcp.toolset import load_earthdata_tools
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.earthdata_mcp.workspace import bind_workspace
         from tta_backend.infrastructure.settings import Settings
         from tta_backend.utils.streaming import current_user_id
 
@@ -183,7 +185,7 @@ class JobsEndpointTests(unittest.IsolatedAsyncioTestCase):
         server.start()
         self.addCleanup(server.stop)
         settings = Settings(earthdata_mcp_url=server.url, earthdata_mcp_token=None)
-        tools = await load_earthdata_tools(settings, current_user_id)
+        tools = bind_workspace(await load_raw_mcp_tools(settings), current_user_id)
 
         original_manager = self.api.app.state.earthdata_mcp_manager
         self.api.app.state.earthdata_mcp_manager = SimpleNamespace(state="ready", tools=tools)
@@ -211,7 +213,8 @@ class JobsEndpointTests(unittest.IsolatedAsyncioTestCase):
         taxonomy handler as a 404, so the panel gets a generic error instead
         of the honest, refetchable not-found row."""
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
-        from tta_backend.earthdata_mcp.toolset import load_earthdata_tools
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.earthdata_mcp.workspace import bind_workspace
         from tta_backend.infrastructure.settings import Settings
         from tta_backend.utils.streaming import current_user_id
 
@@ -222,7 +225,7 @@ class JobsEndpointTests(unittest.IsolatedAsyncioTestCase):
         server.start()
         self.addCleanup(server.stop)
         settings = Settings(earthdata_mcp_url=server.url, earthdata_mcp_token=None)
-        tools = await load_earthdata_tools(settings, current_user_id)
+        tools = bind_workspace(await load_raw_mcp_tools(settings), current_user_id)
 
         original_manager = self.api.app.state.earthdata_mcp_manager
         self.api.app.state.earthdata_mcp_manager = SimpleNamespace(state="ready", tools=tools)
@@ -246,7 +249,8 @@ class JobsEndpointTests(unittest.IsolatedAsyncioTestCase):
         error). That already-honest signal must reach the panel verbatim at
         200 — the normalization must not mangle it into something else."""
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
-        from tta_backend.earthdata_mcp.toolset import load_earthdata_tools
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.earthdata_mcp.workspace import bind_workspace
         from tta_backend.infrastructure.settings import Settings
         from tta_backend.utils.streaming import current_user_id
 
@@ -257,7 +261,7 @@ class JobsEndpointTests(unittest.IsolatedAsyncioTestCase):
         server.start()
         self.addCleanup(server.stop)
         settings = Settings(earthdata_mcp_url=server.url, earthdata_mcp_token=None)
-        tools = await load_earthdata_tools(settings, current_user_id)
+        tools = bind_workspace(await load_raw_mcp_tools(settings), current_user_id)
 
         original_manager = self.api.app.state.earthdata_mcp_manager
         self.api.app.state.earthdata_mcp_manager = SimpleNamespace(state="ready", tools=tools)

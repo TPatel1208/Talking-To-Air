@@ -85,6 +85,6 @@ include = ["tta_backend*", "benchmark*"]
 [tool.pytest.ini_options]
 addopts = "-m \"not eval and not live_mcp\""
 markers = [
-    "eval: outcome-scored benchmark against the current system — spends real model tokens, run explicitly with -m eval",
+    "eval: opt-in tests that spend real model tokens, run explicitly with -m eval",
     "live_mcp: live-smoke suite against the real earthdata-retrieval MCP (T17) — requires both Docker stacks up, run explicitly with -m live_mcp",
 ]

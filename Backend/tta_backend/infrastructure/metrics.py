@@ -20,16 +20,6 @@ HTTP_REQUEST_DURATION_SECONDS = Histogram(
     "HTTP request wall-clock duration in seconds.",
     ["method", "path"],
 )
-AGENT_REQUESTS_TOTAL = Counter(
-    "agent_requests_total",
-    "Completed subagent calls.",
-    ["agent_type", "outcome"],
-)
-ENVELOPE_SALVAGED_TOTAL = Counter(
-    "envelope_salvaged_total",
-    "Sub-agent final messages salvaged from prose after failing envelope parsing.",
-    ["agent_type"],
-)
 HARMONY_FETCH_DURATION_SECONDS = Histogram(
     "harmony_fetch_duration_seconds",
     "Retrieval job duration, from the start of the backend-side await through "
@@ -159,19 +149,12 @@ CUBE_INDEX_INVALIDATIONS_TOTAL = Counter(
 # it from the environment per agent), not a closed vocabulary, so hardcoding
 # ids here would duplicate _VETTED_MODELS and go stale the first time one is
 # swapped. A model with no series has genuinely never been called.
-# ``agent_type`` uses the SAME vocabulary as AGENT_REQUESTS_TOTAL above
-# ("satellite", "ground_sensor", plus "supervisor" which never makes a subagent
-# call), so tokens-per-agent-call joins across the two without a relabel. The
-# codebase carries two other spellings for the same concept -- "earthdata" in
-# the trim middleware, "ground sensor" in ENVELOPE_SALVAGED_TOTAL -- and this
-# deliberately matches neither of those: the join that pays is against
-# agent_requests_total.
-#
-# The label exists because ``model`` cannot substitute for it. Both sub-agents
-# default to the same model id (gemini-3.5-flash-lite), so without this the
-# earthdata agent's spend and the ground agent's spend are one indivisible
-# series -- and they have very different prefixes, which is exactly what
-# anyone reading this metric is trying to compare.
+# ``agent_type`` is the role a model was built for (services/harness_models.py:
+# "supervisor" for the supervisor and exploration, "satellite" for a
+# workflow's agent steps). The label exists because ``model`` cannot
+# substitute for it: two roles may share a model id while sending very
+# different prefixes, which is exactly what anyone reading this metric is
+# trying to compare.
 LLM_TOKENS_TOTAL = Counter(
     "llm_tokens_total",
     "Provider tokens billed for chat completions, by model, agent_type and "
@@ -214,7 +197,7 @@ PIPELINE_PHASES = (
     # component *of* one: a long call with retry sleep is rate limiting, a
     # long call without it is the provider genuinely taking that long.
     "llm_retry_sleep",
-    # The provenance build, split out 2026-08-07 after llm_call/agent_step
+    # The provenance build, split out 2026-08-07 after llm_call
     # narrowed a 870s turn's unexplained 303s (34.8%) to the window between the
     # "render" timer closing and the tool returning. The only work there is
     # _attach_reproducibility, and nothing separated its two expensive halves.
@@ -233,12 +216,6 @@ PIPELINE_PHASES = (
     # open+mask on a regional TEMPO bundle), and that cost should be visible
     # rather than smeared across "aggregate".
     "frames",
-    # "agent_step" is one LangGraph superstep: the wall-clock gap between
-    # consecutive `updates` chunks, attributed to the node that produced the
-    # later one. Deliberately not folded into "llm_call" -- it also covers
-    # checkpointer writes and graph overhead, so the *difference* between the
-    # two is what separates "the model was slow" from "we were slow around it".
-    "agent_step",
 )
 
 _PROMETHEUS_COUNTER_ALIASES = {
@@ -286,14 +263,6 @@ def prometheus_content_type() -> str:
 def observe_http_request(method: str, path: str, status_code: int, duration_seconds: float) -> None:
     HTTP_REQUESTS_TOTAL.labels(method=method, path=path, status_code=str(status_code)).inc()
     HTTP_REQUEST_DURATION_SECONDS.labels(method=method, path=path).observe(duration_seconds)
-
-
-def record_agent_request(agent_type: str, outcome: str) -> None:
-    AGENT_REQUESTS_TOTAL.labels(agent_type=agent_type, outcome=outcome).inc()
-
-
-def record_envelope_salvaged(agent_type: str) -> None:
-    ENVELOPE_SALVAGED_TOTAL.labels(agent_type=agent_type).inc()
 
 
 def observe_harmony_fetch(duration_seconds: float) -> None:
@@ -511,11 +480,6 @@ def initialize_labelsets() -> None:
         for path in ("/health", "/metrics", "/chat", "/sessions"):
             HTTP_REQUESTS_TOTAL.labels(method=method, path=path, status_code="200")
             HTTP_REQUEST_DURATION_SECONDS.labels(method=method, path=path)
-    for agent_type in ("satellite", "ground_sensor"):
-        for outcome in ("success", "failure", "timeout"):
-            AGENT_REQUESTS_TOTAL.labels(agent_type=agent_type, outcome=outcome)
-    for agent_type in ("earthdata", "ground sensor"):
-        ENVELOPE_SALVAGED_TOTAL.labels(agent_type=agent_type)
     for surface in ("chat", "export"):
         ADMISSION_SHED_TOTAL.labels(surface=surface)
         ADMISSION_ORPHANED_TOTAL.labels(surface=surface)

@@ -13,9 +13,9 @@ Required startup values:
 
 Useful operational values:
 
-- `LLM_MODEL`
-- `GROUND_AGENT_MODEL`
-- `SATELLITE_AGENT_MODEL`
+- `LLM_MODEL` (the supervisor and exploration)
+- `EARTHDATA_AGENT_MODEL` (a workflow's agent steps)
+- `NOMINATIM_CONTACT_EMAIL` (the geocoder's contact address; must be a real email)
 - `DATA_FETCH_MODE`
 - `LOG_LEVEL`
 - `LOG_FORMAT=json`
@@ -38,7 +38,6 @@ Important event names include:
 - `cache_hit`
 - `cache_miss`
 - `agent_failure`
-- `response_truncated`
 - `database_reconnect`
 - `long_running_request`
 
@@ -69,51 +68,45 @@ The Postgres-backed tests (`tests/postgres_helpers.py`) run against a real datab
 fake services return for it, and checks on the **outcome**: what reached the
 data boundary (calls to the fake earthdata service and to EPA AQS) and what the
 user was shown (charts, artifacts, the answer text, the narrated stages). A
-case never asserts which tools an agent called, so the same cases can run
-against any system through a `SystemAdapter`. The current system's adapter
-(`benchmark/adapters/current.py`) drives every case through
-`ChatStreamService.stream_chat_events` with the real intent router, the real
-checkpointed supervisor (it needs Postgres), the real ground agent and the real
-satellite agent, whose tools are the workspace-bound production set pointed at
-the fake earthdata service.
+case never asserts which tools a system called, so the same cases run against
+any system through a `SystemAdapter`.
 
-It is opt-in (the `eval` pytest marker) because it spends real model tokens, and
-it is the required before/after gate for any prompt, model, or routing change.
-Run it before and after the change and compare. The `benchmark` compose
-profile runs it in a Linux container against the working tree, reading `.env`
-and starting Postgres and Redis for it:
+The gate system is the agent harness's supervisor end to end
+(`benchmark/adapters/harness.py`): every case's prompt goes in verbatim as the
+one message of a fresh conversation, on the fake data boundary in
+`benchmark/adapters/harness_boundary.py` (the earthdata fake behind the app's
+own `McpEarthdataSession`, EPA AQS behind a capturing fetch with a benchmark
+user's own connector, an offline geocoder, memory stores and an in-memory
+checkpointer). It needs no Postgres or web server.
+
+It spends real model tokens, so it is run by hand, and it is the required
+before/after gate for any prompt, model, workflow or routing change. Run it
+before and after the change and compare:
 
 ```bash
+cd Backend
+uv run python -m benchmark.runner
 docker compose --profile benchmark run --rm benchmark
 ```
 
-On a host that can import the plotting stack, with Postgres up, it also runs
-directly:
-
-```bash
-pytest Backend/tests/test_benchmark.py -v -s -m eval
-```
-
 The models are whatever the environment configures (`*_PROVIDER` and `*_MODEL`,
-Portkey included), and the run is skipped when a configured provider has no real
-key. It needs Postgres, since the supervisor checkpoints there. The rest of
-`tests/test_benchmark.py` (checks, scoring, outcome parsing, case structure) runs
-in the normal suite and spends nothing.
+Portkey included). Results are saved under `benchmark-results/harness/`;
+`--results-dir` overrides the folder (`BENCHMARK_RESULTS_DIR` also works). The
+rest of `tests/test_benchmark*.py` (checks, scoring, outcomes, case structure,
+the adapters on scripted models) runs in the normal suite and spends nothing.
 
 The run must hold on three counts:
 
-- **Pass threshold.** At least `PASS_THRESHOLD` (17) of `TOTAL_CASES` (20) pass.
-  The threshold is provisional until a live run confirms it. The cases are
+- **Pass threshold.** At least `PASS_THRESHOLD` (17) of `TOTAL_CASES` (20)
+  pass, less any case waived in the design's cutover gate table. The cases are
   13 discovery, retrieval, plotting, comparison and ground-validation cases,
   5 end-to-end cases (a ground lookup, a satellite plot, both sources, and two
   routing checks that must not add a ground request), and 2
   region-refusal cases (a refused region must never become a retrieval of
   another one).
 - **Latency budgets.** Every case stays under its category's budget in
-  `CATEGORY_BUDGETS` (15s to 90s, against the fake MCP; the cross-source case,
-  which runs both agents, has the longest). They were measured on the current
-  system entered through the full chat stream, as described beside the table.
-  A case whose checks all pass but that blows its budget still fails.
+  `CATEGORY_BUDGETS` (against the fake MCP). A case whose checks all pass but
+  that blows its budget still fails.
 - **Zero rate-limit evidence.** The run fails outright if any provider
   retry/429 evidence was logged during a single-user run
   (`capture_rate_limit_evidence`).
@@ -123,8 +116,7 @@ and the first failing check's reason) is what a human reads, so a regression's
 location and cause are visible without re-reading this doc. The token columns
 are input, output, and cached (the share of input read from the provider's
 prompt cache), summed over every model call in the case and totalled for the
-run. They are the counts the app's own `record_llm_tokens` metric receives; a
-dash means the provider reported none.
+run; a dash means the provider reported none.
 
 The `est cost` column prices those tokens per model with the table in
 `benchmark/pricing.py`: Anthropic's first-party list prices, with cache reads
@@ -141,17 +133,15 @@ crosses midnight UTC still passes, but a "yesterday" sent as today fails.
 
 ### The benchmark through the harness workflows (no model)
 
-`benchmark/adapters/workflow.py` runs the same cases through the agent harness's
+`benchmark/adapters/workflow.py` runs the same cases through the harness's
 workflow runner instead of a model. A case opts in with two optional fields:
 `workflow` (a workflow name) and `workflow_inputs` (a dict, or a function of the
 run's date for relative dates such as "yesterday"). The adapter runs that
-workflow directly on the fake data boundary (the earthdata fake behind the app's
-own `McpEarthdataSession`, EPA AQS behind a capturing fetch, an offline
-geocoder, memory stores and an in-memory checkpointer) and fills the `Outcome`
-the existing checks read. The answer text is composed from the result envelope's
-fixed wording (mode label, findings, disclosures, gaps, and the reason when the
-run is not done), which is what a supervisor will later be handed. A case that
-names no workflow is not run and is listed as not covered, never as failed.
+workflow directly on the same fake data boundary and fills the `Outcome` the
+checks read. The answer text is composed from the result envelope's fixed
+wording (mode label, findings, disclosures, gaps, and the reason when the run
+is not done). A case that names no workflow is not run and is listed as not
+covered, never as failed.
 
 ```bash
 cd Backend
@@ -161,42 +151,15 @@ docker compose --profile benchmark run --rm benchmark python -m benchmark.runner
 
 It needs no model key or network, and prints a table per workflow (cases
 covered, passed, the first failed check of each failing case) followed by the
-uncovered case ids. Its table is not comparable with the 17/20 gate and is
-never checked against it. Results are saved under `benchmark-results/workflow/`,
-apart from the current system's runs.
+uncovered case ids. Its table is not checked against the gate. Results are
+saved under `benchmark-results/workflow/`.
 
-`benchmark/runner.py` also has a command line: `--system workflow` as above,
-and `--system current` (the default), which runs the current system through
-`run_suite`, prints its table, saves it under `benchmark-results/` and exits
-non-zero below the gate. It needs models and Postgres, like the pytest eval.
-`--results-dir` overrides the folder (`BENCHMARK_RESULTS_DIR` also works).
+A needs_input result counts as a completed run (a refused area is an answer),
+except when the adapter left out a connector or an input, which is recorded as
+an error. `tests/test_benchmark_workflow_adapter.py` pins what each covered
+case does today, failures included.
 
-`e2e_satellite_plot` is expected to fail through this adapter: it checks the
-current system's stage names (`search`, `aoi`, ...), and the harness narrates
-its own (`workflow.map`, `sources.satellite.get_data`, ...). A needs_input
-result counts as a completed run (a refused area is an answer), except when
-the adapter left out a connector or an input, which is recorded as an error.
-`tests/test_benchmark_workflow_adapter.py` pins what each covered case does
-today, failures included.
-
-#### The shared fakes changed
-
-The fakes both systems run against were made to answer more like the real
-earthdata service, for the workflow adapter's sake:
-
-- `search_datasets` also returns a `datasets` list whose entry carries the
-  registry collection's `concept_id`, when the query is a concept id, a
-  registry short name or a registry key such as "TEMPO NO2".
-- Retrieved files name their science variable as the product's registry
-  `primary_var` does (`Tropospheric_NO2`, `vertical_column_troposphere`,
-  `column_amount_o3`), and `describe_dataset` for those cases lists that same
-  variable, in the file's units, with the registry's fill and valid range.
-- The two period files carry a one-step time axis.
-- The OTC ozone case serves a full OTC-sized grid in the product's valid
-  range of Dobson units, on its own handle, so the case now draws a map where
-  it used to find too little valid data.
-- The TROPOMI satellite-plot and cross-source cases read a new handle
-  `obs_e2e_tropomi_1`; `obs_e2e_satellite_1` is unchanged.
-
-The current system's recorded baseline (16/20) predates these changes. Re-run
-it before quoting it again.
+`--system explore` runs each covered case's prompt as one exploration task with
+the case's bundle and real models; it is exploratory, costs tokens, and is not
+checked against the gate either. Results are saved under
+`benchmark-results/explore/`.

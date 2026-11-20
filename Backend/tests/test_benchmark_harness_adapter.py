@@ -174,7 +174,7 @@ class SupervisorTokensTests(unittest.TestCase):
 
 
 class RunnerTests(unittest.TestCase):
-    def test_the_harness_system_is_accepted_and_others_are_not(self):
+    def test_the_harness_system_is_the_default_and_unknown_systems_are_refused(self):
         from benchmark import runner
 
         systems = []
@@ -186,9 +186,11 @@ class RunnerTests(unittest.TestCase):
 
         with patch.object(runner.asyncio, "run", fake_run):
             self.assertEqual(runner.main(["--system", "harness"]), 0)
-            with self.assertRaises(SystemExit):
-                runner.main(["--system", "nonsense"])
-        self.assertEqual(systems, ["harness"])
+            self.assertEqual(runner.main([]), 0)
+            for rejected in ("nonsense", "current"):
+                with self.assertRaises(SystemExit):
+                    runner.main(["--system", rejected])
+        self.assertEqual(systems, ["harness", "harness"])
 
     def test_the_table_says_it_is_the_gate_system(self):
         from benchmark.scoring import HARNESS_TABLE_NOTE, format_results_table

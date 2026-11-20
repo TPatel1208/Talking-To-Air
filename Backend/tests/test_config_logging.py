@@ -46,7 +46,6 @@ class ConfigLoggingTests(unittest.TestCase):
             loaded = get_settings()
 
         self.assertEqual(loaded.llm_model, "gemini-3.7-flash")
-        self.assertEqual(loaded.ground_agent_model, "gemini-3.5-flash-lite")
         self.assertEqual(loaded.data_fetch_mode, "auto")
         self.assertEqual(loaded.harmony_processing_timeout_seconds, 600)
         # Cleared env, so a .env loaded by an earlier test can't change providers.
@@ -73,30 +72,6 @@ class ConfigLoggingTests(unittest.TestCase):
 
         self.assertEqual(loaded.earthdata_mcp_url, "http://mcp:8765/mcp")
         self.assertIsNone(loaded.earthdata_mcp_token)
-
-    def test_agent_recursion_limit_default_has_headroom_for_a_multi_period_workflow(self):
-        """Regression guard (2026-07-20 AOD wildfire session): the default was
-        25, but a legitimate two-period, multi-day plot workflow (search → AOI →
-        coverage → retrieve → poll → plot, ×2 periods) is ~two supersteps per
-        tool call and runs right into that ceiling, surfacing as an opaque
-        GraphRecursionError. The default must leave room for that real workflow;
-        it stays tunable so a runaway loop can still be capped lower/higher."""
-        from tta_backend.infrastructure.settings import get_settings
-
-        with patch.dict(os.environ, {}, clear=True):
-            get_settings.cache_clear()
-            loaded = get_settings()
-
-        self.assertGreaterEqual(loaded.agent_recursion_limit, 40)
-
-    def test_agent_recursion_limit_is_overridable(self):
-        from tta_backend.infrastructure.settings import get_settings
-
-        with patch.dict(os.environ, {"AGENT_RECURSION_LIMIT": "60"}, clear=True):
-            get_settings.cache_clear()
-            loaded = get_settings()
-
-        self.assertEqual(loaded.agent_recursion_limit, 60)
 
         with patch.dict(
             os.environ,
@@ -165,20 +140,28 @@ class ConfigLoggingTests(unittest.TestCase):
 
         self.assertEqual(loaded.bundle_open_max_uncompressed_bytes, 1234)
 
-    def test_settings_loads_subagent_trim_token_ceiling_default_and_override(self):
-        from tta_backend.infrastructure.settings import get_settings
+    def test_a_stray_shared_epa_credential_in_the_environment_is_ignored(self):
+        """EPA AQS data uses each user's own connector; there is no
+        application-level credential, and settings still load with the old
+        variables set."""
+        from tta_backend.infrastructure.settings import Settings
 
+        with patch.dict(os.environ, {"AQS_API_EMAIL": "ops@lab.edu", "AQS_API_KEY": "shared-key"}, clear=True):
+            loaded = Settings()
+
+        self.assertFalse(hasattr(loaded, "aqs_api_key"))
+        self.assertFalse(hasattr(loaded, "aqs_api_email"))
+        self.assertNotIn("shared-key", repr(loaded))
+
+    def test_the_geocoder_contact_reads_its_own_variable_then_the_old_operator_address(self):
+        from tta_backend.infrastructure.settings import Settings
+
+        with patch.dict(os.environ, {"NOMINATIM_CONTACT_EMAIL": "geo@lab.edu", "AQS_API_EMAIL": "ops@lab.edu"}, clear=True):
+            self.assertEqual(Settings().nominatim_contact_email, "geo@lab.edu")
+        with patch.dict(os.environ, {"AQS_API_EMAIL": "ops@lab.edu"}, clear=True):
+            self.assertEqual(Settings().nominatim_contact_email, "ops@lab.edu")
         with patch.dict(os.environ, {}, clear=True):
-            get_settings.cache_clear()
-            loaded = get_settings()
-
-        self.assertEqual(loaded.subagent_trim_token_ceiling, 20000)
-
-        with patch.dict(os.environ, {"SUBAGENT_TRIM_TOKEN_CEILING": "4000"}, clear=True):
-            get_settings.cache_clear()
-            loaded = get_settings()
-
-        self.assertEqual(loaded.subagent_trim_token_ceiling, 4000)
+            self.assertEqual(Settings().nominatim_contact_email, "your_email@example.com")
 
     def test_settings_loads_earthdata_agent_model_default_and_override(self):
         # Settings() constructed directly (not via get_settings()) so a
@@ -209,7 +192,6 @@ class ConfigLoggingTests(unittest.TestCase):
 
         self.assertEqual(loaded.supervisor_model_provider, "google")
         self.assertEqual(loaded.earthdata_agent_provider, "google")
-        self.assertEqual(loaded.ground_agent_provider, "google")
 
     def test_settings_loads_agent_provider_overrides(self):
         from tta_backend.infrastructure.settings import Settings
@@ -219,7 +201,6 @@ class ConfigLoggingTests(unittest.TestCase):
             {
                 "SUPERVISOR_MODEL_PROVIDER": "groq",
                 "EARTHDATA_AGENT_PROVIDER": "google",
-                "GROUND_AGENT_PROVIDER": "google",
             },
             clear=True,
         ):
@@ -227,12 +208,11 @@ class ConfigLoggingTests(unittest.TestCase):
 
         self.assertEqual(loaded.supervisor_model_provider, "groq")
         self.assertEqual(loaded.earthdata_agent_provider, "google")
-        self.assertEqual(loaded.ground_agent_provider, "google")
 
     def test_validate_startup_requires_google_key_only_when_a_google_agent_is_configured(self):
         from tta_backend.infrastructure.settings import Settings
 
-        # Default posture: supervisor, earthdata, and ground agent all on google.
+        # Default posture: both model settings on google.
         # Cleared env, so a .env loaded by an earlier test can't change providers.
         with patch.dict(os.environ, {}, clear=True):
             loaded = Settings(db_password="x", **REQUIRED_KWARGS, google_api_key=None, groq_api_key="x")
@@ -247,7 +227,6 @@ class ConfigLoggingTests(unittest.TestCase):
             groq_api_key="x",
             supervisor_model_provider="groq",
             earthdata_agent_provider="groq",
-            ground_agent_provider="groq",
         )
         loaded.validate_startup()
 
@@ -292,13 +271,13 @@ class ConfigLoggingTests(unittest.TestCase):
     def test_validate_startup_requires_groq_key_only_when_a_groq_agent_is_configured(self):
         from tta_backend.infrastructure.settings import Settings
 
-        # A groq-configured subagent requires GROQ_API_KEY.
+        # A groq-configured model requires GROQ_API_KEY.
         loaded = Settings(
             db_password="x",
             **REQUIRED_KWARGS,
             google_api_key="x",
             groq_api_key=None,
-            ground_agent_provider="groq",
+            earthdata_agent_provider="groq",
         )
         with self.assertRaisesRegex(RuntimeError, "GROQ_API_KEY"):
             loaded.validate_startup()
@@ -334,8 +313,8 @@ class ConfigLoggingTests(unittest.TestCase):
             **REQUIRED_KWARGS,
             google_api_key="x",
             groq_api_key="x",
-            ground_agent_provider="groq",
-            ground_agent_model="some-groq-only-model",
+            earthdata_agent_provider="groq",
+            earthdata_agent_model="some-groq-only-model",
         )
         loaded.validate_startup()  # must not raise
 

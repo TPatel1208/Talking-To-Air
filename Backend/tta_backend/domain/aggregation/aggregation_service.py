@@ -106,7 +106,7 @@ def fill_match(values: Any, fill: Any) -> Any:
     """Boolean mask of cells equal to the fill value — the ONE definition of
     fill matching, shared by the science-variable masking
     (``apply_quality_mask``) and the companion-evidence band masking
-    (``plot_tools._band_time_mean``), so a tolerance fix can never silently
+    (``domain.charts.provenance.band_time_mean``), so a tolerance fix can never silently
     diverge between the two. Works on ``xr.DataArray`` and ``np.ndarray``
     alike (pure elementwise ops).
 
@@ -464,8 +464,8 @@ class VariableChoiceRequired(Exception):
 
     It carries two things:
     - ``resolution``: the resolver's full ``Resolution`` (every ranked
-      candidate), from which the tool layer builds the uncapped
-      ``VariableChoice`` picker and emits it out-of-band (emit_variable_choice).
+      candidate), from which a caller can build the uncapped
+      ``VariableChoice`` picker.
     - ``mcp_error``: a size-bounded ``MCPToolError`` -- the tool returns this compact, capped payload to the model as the
       sub-task's terminal tool result, so the model can write a one-line "I've
       shown you a picker" without ever seeing (or re-feeding) the full list.
@@ -913,11 +913,9 @@ class AggregationService:
         Carried out of to_dataarray on the returned array's attrs.
 
         For a MEDIUM-confidence auto-pick, the full deterministic picker
-        is stashed too -- the answer is delivered with its chart, but the
-        dispatch layer lifts this into ``AgentResult.variable_choice`` so the
-        researcher can override the guess in one click. Built here (where the
-        Dataset is in hand for per-candidate units); the auto-send prompts are
-        left blank for run_satellite to fill from the original request."""
+        is stashed too, so a caller can offer the researcher an override.
+        Built here (where the Dataset is in hand for per-candidate units); the
+        auto-send prompts are left blank for the caller to fill."""
         chosen = next((c for c in resolution.candidates if c.name == resolution.name), None)
         facts: dict[str, Any] = {
             "chosen": resolution.name,
@@ -1100,7 +1098,7 @@ class AggregationService:
 
         The identification half of the masking doctrine, for callers who need
         to know *which* variable carries quality without masking anything --
-        plot_tools excludes it from the evidence band loop, because its pass
+        the evidence band loop excludes it, because its pass
         rate is already reported once, from the mask itself, and a second
         computation there could only disagree.
 
@@ -1382,8 +1380,8 @@ class AggregationService:
             "granule_dates": [self._date_only(t) for t in times],
             # Explicit range facts so provenance/query builders don't have to
             # re-derive them from a DataArray whose time dim the aggregation
-            # itself already reduced away (plot_tools passes the *reduced*
-            # array downstream).
+            # itself already reduced away (callers pass the *reduced* array
+            # downstream).
             "start_date": start,
             "end_date": end,
             "n_granules": int(n_granules),

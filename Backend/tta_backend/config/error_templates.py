@@ -2,18 +2,14 @@
 config/error_templates.py
 ===========================
 Deterministic answers for chat-level failures where no model composed any
-text — the dispatch-time "data layer isn't ready" gate and an envelope-parse
-failure with no prose to salvage. Both live in services/subagent_dispatch.py,
-which the supervisor and the router fast path both call, so both paths give
-the same answer for the same failure with no model call.
+text: a turn that raised, ran out of time, or was shed by admission control.
+The chat host (services/harness_chat.py) sends them with no model call.
 
 Every template is filled only from observed facts (``stage``, ``detail``)
 — never a guess at cause. This is what keeps the system honest when it's
 wrong: it can misclassify a failure, but it can never narrate one.
 """
 from __future__ import annotations
-
-from typing import Any
 
 from tta_backend.earthdata_mcp.results import (
     CATEGORY_CONTRACT,
@@ -24,18 +20,6 @@ from tta_backend.earthdata_mcp.results import (
     CATEGORY_USER_INPUT,
 )
 
-# Chat-level failure categories that are NOT MCP tool errors (so they don't
-# live in earthdata_mcp.results' taxonomy): an exception escaping a sub-agent
-# turn from the *language model* layer, not the data layer. Before these, a
-# provider rate-limit (Gemini free-tier 429/RESOURCE_EXHAUSTED) and a LangGraph
-# recursion-limit stop both collapsed into the generic CONTRACT "internal
-# error" text — indistinguishable from a real crash and from each other. That
-# is exactly what made the June 2023 AOD wildfire session un-actionable: the
-# agent kept advising a smaller region when the real cause was a spent LLM
-# quota (wait and retry) or a step-budget ceiling (split the request).
-CATEGORY_RATE_LIMITED = "rate_limited"
-CATEGORY_RECURSION_EXHAUSTED = "recursion_exhausted"
-
 _TEMPLATES: dict[str, str] = {
     CATEGORY_USER_INPUT: "The {stage} could not proceed: {detail}",
     CATEGORY_NO_DATA: "The {stage} found no data: {detail}",
@@ -44,16 +28,6 @@ _TEMPLATES: dict[str, str] = {
     CATEGORY_PROVIDER_UNAVAILABLE: (
         "The {stage} is temporarily unavailable. {detail} "
         "This was not a problem with your question — try again in a moment."
-    ),
-    CATEGORY_RATE_LIMITED: (
-        "The {stage} was rate-limited by the language-model provider and could "
-        "not finish. {detail} This was not a problem with your question and not "
-        "a data-size issue — wait a minute and try again."
-    ),
-    CATEGORY_RECURSION_EXHAUSTED: (
-        "The {stage} needed more steps than its budget allows and stopped before "
-        "finishing. {detail} This was not a problem with your data — try one plot "
-        "at a time, or split the request into fewer periods or regions."
     ),
     CATEGORY_CONTRACT: (
         "The {stage} hit an internal error and could not complete. {detail} "
@@ -83,11 +57,10 @@ def render_error_answer(category: str, stage: str, detail: str | None = None) ->
 
 
 # Distinct from the taxonomy templates above — a turn deadline is not an
-# MCPToolError category, it is stream_chat_events/_fast_path_events giving up
-# on the whole turn rather than one classified failure. Names any job handles
-# still running server-side (collected from this turn's job_progress events)
-# so a researcher staring at the timeout answer knows the Jobs panel, not a
-# retry, is where to look.
+# MCPToolError category, it is the chat host giving up on the whole turn
+# rather than one classified failure. Names any job handles still running
+# server-side so a researcher staring at the timeout answer knows the Jobs
+# panel, not a retry, is where to look.
 _TURN_TIMEOUT_TEMPLATE = (
     "This request ran out of time before it could finish. {jobs_detail}"
     "This was not a problem with your question — try again, or check the "
@@ -108,11 +81,9 @@ def render_turn_timeout_answer(job_handles: list[str] | None = None) -> str:
 # Telling a researcher to check Jobs here would send them to an empty panel.
 #
 # Templated rather than model-composed for the reason the taxonomy answers
-# are, and one more besides: the model never sees this. AdmissionOverloaded
-# subclasses RuntimeError, which LangGraph's ToolNode lets escape rather than
-# converting into a ToolMessage, so the turn ends before the supervisor could
-# read a "busy" tool result and simply call the tool again -- which would make
-# an overloaded backend amplify its own load.
+# are, and one more besides: the model never sees this. The turn ends before
+# the supervisor could read a "busy" result and simply call the tool again --
+# which would make an overloaded backend amplify its own load.
 _OVERLOADED_TEMPLATE = (
     "The server is busy handling other large requests right now, so this one "
     "was not started. This was not a problem with your question — wait a "
@@ -123,105 +94,3 @@ _OVERLOADED_TEMPLATE = (
 
 def render_overloaded_answer() -> str:
     return _OVERLOADED_TEMPLATE
-
-
-# Silent scope substitution. When a retrieval answers a materially
-# different question than the one asked — a single-day request served by a
-# monthly mean, a time range clamped to coverage, a region that resolved to a
-# different place — the researcher must read that in the chat answer, not
-# discover it in the Metadata tab's fine print. This is templated (never
-# model-composed) for the same reason the taxonomy answers above are: the
-# model can't paraphrase away an inconvenient correction it didn't want to
-# admit. Rendered from provenance's requested_scope/delivered_scope facts in
-# the dispatch layer (services/subagent_dispatch.py), the same seam that
-# appends the error answers.
-
-
-def _date_part(value: str | None) -> str | None:
-    """The YYYY-MM-DD of an ISO date or datetime, or None. Time-of-day is
-    below the granularity any substitution disclosure cares about — a single-
-    date request naturally widens to T00:00:00/T23:59:59, which is not a
-    substitution to announce."""
-    if not value:
-        return None
-    return str(value).split("T", 1)[0].strip() or None
-
-
-def _requested_span(time_range: str | None) -> tuple[str | None, str | None]:
-    """The (start, end) date parts of a requested ``start/end`` range (or a
-    bare single date). Unparseable shapes yield (None, None) — nothing to
-    compare against, so no note, rather than a false alarm."""
-    if not time_range:
-        return (None, None)
-    parts = str(time_range).split("/", 1)
-    start = _date_part(parts[0])
-    end = _date_part(parts[1]) if len(parts) == 2 else start
-    return (start, end)
-
-
-def _place_key(name: str) -> str:
-    """The leading, casefolded locality of a place name — the part a geocoder
-    canonicalizes *around*, not the administrative suffix it appends. "Los
-    Angeles, CA" and "Los Angeles, California, United States" share the key
-    "los angeles"; "California" and "California, United States" share
-    "california". Whitespace is collapsed so spacing differences don't matter."""
-    leading = str(name).split(",", 1)[0]
-    return " ".join(leading.split()).casefold()
-
-
-def _same_place(requested: str, delivered: str) -> bool:
-    """Whether the delivered region is the same place the request named, only
-    canonicalized. Exact-string identity misfires on geocoder
-    canonicalization drift ("California" -> "California, United States") and on
-    abbreviation expansion inside the name ("Los Angeles, CA" -> "Los Angeles,
-    California, United States"), both of which fabricate a "substitution"
-    warning for the very place asked about. Matching on the leading locality
-    key treats those as the same place while a genuinely different region
-    (a different leading locality) still reads as a substitution."""
-    r_norm = " ".join(str(requested).split()).casefold()
-    d_norm = " ".join(str(delivered).split()).casefold()
-    if r_norm == d_norm:
-        return True
-    return _place_key(requested) == _place_key(delivered)
-
-
-def render_scope_note(requested_scope: dict[str, Any] | None, delivered_scope: dict[str, Any] | None) -> str | None:
-    """A one-line disclosure when the delivered scope differs materially from
-    the requested one, or ``None`` when they match (don't nag on an exact
-    request). Filled only from observed facts — never a guess at why the
-    substitution happened.
-
-    "Differ materially" (decided against real cases):
-    - time: requested vs delivered date parts differ (any narrowing/widening,
-      including a single day served by a whole month);
-    - region: the delivered region/display name differs from the requested
-      location string (exact-string fuzz — the goal is catching a
-      *substitution*, not a synonym)."""
-    requested_scope = requested_scope or {}
-    delivered_scope = delivered_scope or {}
-
-    clauses: list[str] = []
-
-    req_start, req_end = _requested_span(requested_scope.get("time_range"))
-    del_start = _date_part(delivered_scope.get("start_date"))
-    del_end = _date_part(delivered_scope.get("end_date"))
-    if req_start and del_start and (req_start, req_end) != (del_start, del_end):
-        requested_time = req_start if req_start == req_end else f"{req_start} to {req_end}"
-        delivered_time = del_start if del_start == del_end else f"{del_start} to {del_end}"
-        cadence = str(delivered_scope.get("cadence") or "").strip()
-        cadence_clause = f" (this is a {cadence} product)" if cadence and cadence.lower() != "unknown" else ""
-        clauses.append(
-            f"you asked for {requested_time}, but the data shown covers "
-            f"{delivered_time}{cadence_clause}"
-        )
-
-    requested_location = str(requested_scope.get("location") or "").strip()
-    delivered_region = str(delivered_scope.get("region_name") or "").strip()
-    if requested_location and delivered_region and not _same_place(requested_location, delivered_region):
-        clauses.append(
-            f"you asked about {requested_location}, but the data shown covers {delivered_region}"
-        )
-
-    if not clauses:
-        return None
-    return "Note: " + "; ".join(clauses) + "."

@@ -58,7 +58,7 @@ _CREDENTIAL_PARAMS = ("edl_token",)
 #
 # ``raw`` is stored exactly as ``call_tool`` returned it — a string for most
 # tools, a content list for some — never a parsed or re-serialized form, so
-# downstream parse_tool_result and model_view_describe_dataset behave
+# downstream parse_tool_result behaves
 # identically on a hit and on a miss.
 _CACHE: OrderedDict[str, tuple[float, Any]] = OrderedDict()
 

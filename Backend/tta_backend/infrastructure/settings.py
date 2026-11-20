@@ -67,12 +67,6 @@ class Settings:
     """Application settings loaded once from environment at startup/import."""
 
     llm_model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "gemini-3.7-flash"))
-    ground_agent_model: str = field(
-        default_factory=lambda: os.getenv(
-            "GROUND_AGENT_MODEL",
-            "gemini-3.5-flash-lite",
-        )
-    )
     earthdata_agent_model: str = field(
         default_factory=lambda: os.getenv(
             "EARTHDATA_AGENT_MODEL",
@@ -84,9 +78,6 @@ class Settings:
     )
     earthdata_agent_provider: str = field(
         default_factory=lambda: os.getenv("EARTHDATA_AGENT_PROVIDER", "google")
-    )
-    ground_agent_provider: str = field(
-        default_factory=lambda: os.getenv("GROUND_AGENT_PROVIDER", "google")
     )
     google_api_key: str | None = field(default_factory=lambda: os.getenv("GOOGLE_API_KEY"))
     groq_api_key: str | None = field(default_factory=lambda: os.getenv("GROQ_API_KEY"))
@@ -188,35 +179,6 @@ class Settings:
     # cooldown — never the 600-calls/15s churn the breaker exists to stop.
     mcp_transport_recovery_cooldown_seconds: float = field(
         default_factory=lambda: max(1.0, _float_env("MCP_TRANSPORT_RECOVERY_COOLDOWN_SECONDS", 5.0))
-    )
-    # The LangGraph superstep budget every agent's astream runs under. Raised
-    # from LangGraph's historical default (25) to 40 after the 2026-07-20 AOD
-    # wildfire session: a legitimate two-period, multi-day plot workflow (search
-    # → AOI → coverage → retrieve → poll → plot, ×2 periods) is ~two supersteps
-    # per tool call and hit the 25 ceiling as an opaque GraphRecursionError,
-    # not a runaway loop. 40 (~18 tool round-trips) leaves room for that real
-    # workflow while still capping a genuine loop. Kept explicit and tunable so
-    # the ceiling stays an intentional choice (the storm diagnosis called out
-    # that it must never be an accidental default).
-    agent_recursion_limit: int = field(
-        default_factory=lambda: max(1, _int_env("AGENT_RECURSION_LIMIT", 40))
-    )
-    # Per-turn limits on the supervisor's dispatch fan-out. Concurrency
-    # caps how many sub-agents run at once; satellite gets its own lower cap
-    # because it is the memory-heavy path. The request budget counts sub-agent
-    # runs across every dispatch call in a turn, and rounds count the calls
-    # themselves (two allow satellite first, then ground with its findings).
-    supervisor_max_concurrency: int = field(
-        default_factory=lambda: max(1, _int_env("SUPERVISOR_MAX_CONCURRENCY", 4))
-    )
-    supervisor_max_satellite_concurrency: int = field(
-        default_factory=lambda: max(1, _int_env("SUPERVISOR_MAX_SATELLITE_CONCURRENCY", 2))
-    )
-    supervisor_max_requests_per_turn: int = field(
-        default_factory=lambda: max(1, _int_env("SUPERVISOR_MAX_REQUESTS_PER_TURN", 6))
-    )
-    supervisor_max_dispatch_rounds: int = field(
-        default_factory=lambda: max(1, _int_env("SUPERVISOR_MAX_DISPATCH_ROUNDS", 2))
     )
     retrieval_max_timeseries_days: int = field(
         default_factory=lambda: max(1, _int_env("RETRIEVAL_MAX_TIMESERIES_DAYS", 366))
@@ -344,8 +306,8 @@ class Settings:
     heavy_admission_limit: int = field(
         default_factory=lambda: max(0, _int_env("HEAVY_ADMISSION_LIMIT", 0))
     )
-    # The server-rendered map overlay PNGs (tools/satellite_tools/
-    # plot_tools.py). Only reachable through the authenticated
+    # The server-rendered map overlay PNGs (services/overlay_store.py).
+    # Only reachable through the authenticated
     # /chart/{id}/overlay.png route, which checks chart ownership first.
     #
     # A setting rather than an ``APP_ROOT``-relative constant, so importing
@@ -441,11 +403,14 @@ class Settings:
     mcp_metadata_cache_max_entries: int = field(
         default_factory=lambda: max(1, _int_env("MCP_METADATA_CACHE_MAX_ENTRIES", 512))
     )
-    aqs_api_email: str = field(default_factory=lambda: os.getenv("AQS_API_EMAIL", "your_email@example.com"))
-    aqs_api_key: str = field(default_factory=lambda: os.getenv("AQS_API_KEY", "your_aqs_key"))
-
-    subagent_trim_token_ceiling: int = field(
-        default_factory=lambda: max(1, _int_env("SUBAGENT_TRIM_TOKEN_CEILING", 20000))
+    # The contact address in the geocoder's User-Agent, which Nominatim's usage
+    # policy requires. Nominatim refuses example.com/.org/.net addresses, so
+    # geocoding needs a real one. AQS_API_EMAIL is read when it is unset, since
+    # deployments already hold the operator's address there.
+    nominatim_contact_email: str = field(
+        default_factory=lambda: os.getenv("NOMINATIM_CONTACT_EMAIL")
+        or os.getenv("AQS_API_EMAIL")
+        or "your_email@example.com"
     )
 
     log_level: str = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO").upper())
@@ -604,7 +569,6 @@ class Settings:
         configured_providers = {
             self.supervisor_model_provider,
             self.earthdata_agent_provider,
-            self.ground_agent_provider,
         }
         if "google" in configured_providers and not self.google_api_key:
             missing.append("GOOGLE_API_KEY")
@@ -627,7 +591,6 @@ class Settings:
         for label, provider, model in (
             ("LLM_MODEL", self.supervisor_model_provider, self.llm_model),
             ("EARTHDATA_AGENT_MODEL", self.earthdata_agent_provider, self.earthdata_agent_model),
-            ("GROUND_AGENT_MODEL", self.ground_agent_provider, self.ground_agent_model),
         ):
             vetted = _VETTED_MODELS.get(provider)
             if vetted is not None and model not in vetted:
