@@ -23,6 +23,7 @@ from typing import Any
 from tta_backend.harness.handles.errors import HandleError
 from tta_backend.harness.handles.registry import HandleRegistry
 from tta_backend.harness.results import Result
+from tta_backend.harness.run_context import source_name
 
 logger = logging.getLogger(__name__)
 
@@ -35,8 +36,6 @@ NOTES_HEADING = "Notes:"
 GAPS_HEADING = "Gaps:"
 NOT_DONE_HEADING = "Not finished:"
 QUESTION_LINE = "Question: {prompt}"
-# The sources a connector names, as the user knows them.
-SOURCE_NAMES = {"earthdata": "NASA Earthdata", "epa_aqs": "EPA AQS"}
 UNAVAILABLE = "{source} is unavailable right now, so nothing was started; try again in a few minutes."
 OPTIONS_LINE = "Options: {options}"
 
@@ -204,7 +203,7 @@ def _question_lines(question: dict[str, Any]) -> list[str]:
 
 def unavailable_wording(connector: str) -> str:
     """The fixed wording of work refused because ``connector``'s service is down."""
-    return UNAVAILABLE.format(source=SOURCE_NAMES.get(connector, connector))
+    return UNAVAILABLE.format(source=source_name(connector))
 
 
 def appended(results: Sequence[Result], unavailable: Sequence[str] = ()) -> str:

@@ -10,8 +10,28 @@
 
 import { API_BASE } from '../config.js'
 
+// A chart a harness run drew carries its run in `metadata.harness` (the stored
+// row) or `run_id` (the live frame). The backend writes such a chart's CSV from
+// its payload, which holds the data in full only for these types
+// (payload_figures.ROW_TYPES); for any other it answers 409.
+const HARNESS_CSV_TYPES = new Set(['timeseries', 'profile'])
+// A handle the backend derived, which the data service cannot convert to NetCDF
+// (harness/handles/model.py _DERIVED_ID).
+const DERIVED_HANDLE = /^(?:grid|series|points|polygons|table|scalar)_[0-9a-f]{32}$/
+
+export function harnessRunOf(chart) {
+  const linked = chart?.metadata?.harness?.run_id
+  if (typeof linked === 'string' && linked) return linked
+  return typeof chart?.run_id === 'string' && chart.run_id ? chart.run_id : null
+}
+
+function serverCsv(chart) {
+  if (!chart?.chart_id || !chart?.export) return false
+  return !harnessRunOf(chart) || HARNESS_CSV_TYPES.has(chart.type)
+}
+
 export function resolveCsvExport(chart) {
-  if (chart?.chart_id && chart?.export) {
+  if (serverCsv(chart)) {
     return { kind: 'server', url: `${API_BASE}/chart/${chart.chart_id}/export.csv` }
   }
 
@@ -67,6 +87,14 @@ export function resolveCsvExport(chart) {
     if (rows.length) return { kind: 'client', rows }
   }
 
+  const run = harnessRunOf(chart)
+  if (run) {
+    return {
+      kind: 'unavailable',
+      message: `A ${chart.type || 'chart'} chart drawn by a harness run has no CSV export. `
+        + `The archive of the result that drew it, /result/${run}/export.zip, holds the data the result kept.`,
+    }
+  }
   return {
     kind: 'unavailable',
     message: 'This chart does not include full-resolution export metadata.',
@@ -108,6 +136,15 @@ export function resolveNetcdfExport(chart) {
         `This chart is built from ${handles.length} sources; NetCDF export ` +
         'delivers a single one, so it would not be the chart you are looking at. ' +
         'Export each source chart on its own.',
+    }
+  }
+
+  const run = harnessRunOf(chart)
+  if (run && DERIVED_HANDLE.test(handles[0])) {
+    return {
+      kind: 'unavailable',
+      message: 'This chart shows data the backend derived, which the data service cannot convert to NetCDF. '
+        + `The archive of the result that drew it, /result/${run}/export.zip, holds its methods and data.`,
     }
   }
 

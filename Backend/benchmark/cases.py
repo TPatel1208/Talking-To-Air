@@ -184,7 +184,9 @@ def _standard_handlers(
     ``product`` is the registry key of the product the case's file holds; the
     dataset then describes that product's science variable (with its registry
     fill and valid range) in the file's ``units``, as the real service does.
-    Search lists that product's entry unless ``search_entries`` gives the hits.
+    Search lists that product's entry unless ``search_entries`` gives the hits;
+    a ``concept_id`` filter keeps only the hits for that collection, as the
+    real service's search does.
     """
 
     async def search_datasets(query, filters, workspace_id):
@@ -195,6 +197,9 @@ def _standard_handlers(
         if hits is None:
             entry = _registry_entry(query, dataset_handle)
             hits = [entry] if entry is not None else None
+        concept_id = (filters or {}).get("concept_id")
+        if hits and concept_id is not None:
+            hits = [h for h in hits if (h.get("concept_id") or (h.get("summary") or {}).get("concept_id")) == concept_id]
         if hits:
             reply["datasets"] = hits
         return reply

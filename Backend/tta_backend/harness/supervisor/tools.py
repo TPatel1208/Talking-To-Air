@@ -11,9 +11,11 @@
   through ``invoke``. A turn's lookups share one exploratory run, started on
   the first and closed with ``close`` at the end of the turn.
 
-Work that needs a connector whose service is down (``context.reachable``) is
-refused before any run starts, in fixed wording; the connector is kept in
-``unavailable`` for the answer to name.
+A workflow run or a lookup that needs a connector whose service is down
+(``context.reachable``) is refused before any run starts, in fixed wording;
+the connector is kept in ``unavailable`` for the answer to name. An
+exploration task still runs, without the capabilities that need it, and its
+result discloses the source it went without.
 
 Every result reaches the model as ``result_view``; a lookup as the small JSON
 specialists see. Refusals use fixed wording. An unexpected exception is
@@ -44,12 +46,11 @@ from tta_backend.harness.context.ledger import Ledger
 from tta_backend.harness.knowledge import NoteCatalogue
 from tta_backend.harness.models import Backoff
 from tta_backend.harness.results import Mode, Result
-from tta_backend.harness.run_context import RunContext, RunEnv
+from tta_backend.harness.run_context import RunContext, RunEnv, report_finished
 from tta_backend.harness.specialists.explore import explore
 from tta_backend.harness.specialists.task import ExploreLimits, ExploreTask
 from tta_backend.harness.specialists.tools import failure_view, retry_helps, tool_schema
 from tta_backend.harness.specialists.tools import result_view as capability_view
-from tta_backend.harness.specialists.bundles import get_bundle
 from tta_backend.harness.supervisor.answer import dumps, result_view, unavailable_wording, view_of
 from tta_backend.harness.trace import FailureCategory, Run, RunNotFound, StepFailure, new_run_id
 from tta_backend.harness.workflows.compile import NotRunnable
@@ -445,14 +446,6 @@ class TurnTools:
         split = self._split([place for task in checked for place in task.places])
         if split is not None:
             return _refused(split + " Nothing was run.")
-        down = self._down(
-            capability.connector
-            for task in checked
-            for capability in get_bundle(task.bundle).capabilities(self._capabilities)
-            if capability.connector_required
-        )
-        if down is not None:
-            return down
         results = await explore(
             self.context, self._build_env, checked, registry=self._capabilities, notes=self._notes,
             limits=self._explore_limits, backoff=self._backoff,
@@ -524,4 +517,5 @@ class TurnTools:
             await self.context.storage.traces.finish_run(user_id, result.trace_id, "done", self.context.clock.now())
         except Exception as exc:
             logger.error("lookup run %s could not be finished: %s", result.trace_id, type(exc).__name__)
+        report_finished(self.context.events, result.trace_id, result.status)
         return result

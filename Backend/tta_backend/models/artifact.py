@@ -102,6 +102,9 @@ class ArtifactReference(BaseModel):
     title: str | None = None
     row_count: int | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # The harness run that drew it and that run's mode view, when a run did.
+    run_id: str | None = None
+    mode: dict[str, Any] | None = None
 
 
 class TableArtifactPayload(BaseModel):

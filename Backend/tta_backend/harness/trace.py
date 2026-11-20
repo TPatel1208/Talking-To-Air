@@ -357,6 +357,15 @@ class TraceStore(Protocol):
 
     async def list_runs(self, user_id: str, conversation_id: str) -> list[Run]: ...
 
+    async def waiting_uses_elsewhere(self, user_id: str, conversation_id: str) -> list[TraceEntry]:
+        """The user's ``use`` entries saved as ``waiting``, in runs of every
+        conversation but ``conversation_id``."""
+        ...
+
+    async def delete_conversation(self, user_id: str, conversation_id: str) -> list[str]:
+        """Delete the user's runs in the conversation with their entries; the ids deleted."""
+        ...
+
 
 def _check_start(run: Run) -> None:
     if run.status != "running" or run.ended is not None:
@@ -473,6 +482,27 @@ class InMemoryTraceStore:
             if r.user_id == user_id and r.conversation_id == conversation_id
         ]
         return sorted(runs, key=lambda r: (r.started, r.id))
+
+    async def waiting_uses_elsewhere(self, user_id: str, conversation_id: str) -> list[TraceEntry]:
+        found: list[TraceEntry] = []
+        for (owner, run_id), run in self._runs.items():
+            if owner != user_id or run.conversation_id == conversation_id:
+                continue
+            stored = self._entries[(owner, run_id)]
+            found.extend(
+                _copy_entry(*stored[seq]) for seq in sorted(stored)
+                if stored[seq][0].kind == "use" and stored[seq][0].status == "waiting"
+            )
+        return found
+
+    async def delete_conversation(self, user_id: str, conversation_id: str) -> list[str]:
+        doomed = [r.id for r in await self.list_runs(user_id, conversation_id)]
+        for run_id in doomed:
+            key = (user_id, run_id)
+            del self._runs[key]
+            self._last_seq.pop(key, None)
+            self._entries.pop(key, None)
+        return doomed
 
 
 def _numbered(entry: NewEntry, seq: int, params: Any, result: Any) -> TraceEntry:
@@ -762,6 +792,29 @@ class PostgresTraceStore:
             )
             rows = await cur.fetchall()
         return [_run_from_row(r) for r in rows]
+
+    async def waiting_uses_elsewhere(self, user_id: str, conversation_id: str) -> list[TraceEntry]:
+        columns = ", ".join(f"e.{column.strip()}" for column in _ENTRY_COLUMNS.split(","))
+        async with self._connect() as conn:
+            cur = await conn.execute(
+                f"SELECT {columns} FROM harness_trace_entries e "
+                "JOIN harness_runs r ON r.user_id = e.user_id AND r.id = e.run_id "
+                "WHERE e.user_id = %s AND r.conversation_id <> %s AND e.kind = 'use' AND e.status = 'waiting' "
+                "ORDER BY e.run_id, e.seq",
+                (user_id, conversation_id),
+            )
+            rows = await cur.fetchall()
+        return [_entry_from_row(r) for r in rows]
+
+    async def delete_conversation(self, user_id: str, conversation_id: str) -> list[str]:
+        # The entries go with their runs (ON DELETE CASCADE).
+        async with self._connect() as conn:
+            cur = await conn.execute(
+                "DELETE FROM harness_runs WHERE user_id = %s AND conversation_id = %s RETURNING id",
+                (user_id, conversation_id),
+            )
+            rows = await cur.fetchall()
+        return [str(row[0]) for row in rows]
 
 
 # Fixed wording, so the trace never carries text from an exception or a value.

@@ -47,20 +47,32 @@ def is_chart_reference(payload: dict[str, Any]) -> bool:
 
 @dataclass(frozen=True)
 class ChartLink:
-    """The run that drew a chart, the mode it ran in, and the handle the chart renders.
+    """The run that drew a chart, the mode it ran in, and the handles the chart renders.
 
-    Kept in the chart's own row (``metadata.harness``): the row is already
-    owned by its user and deleted with its session, and a run's charts are
-    found from the other side through the run's trace, so a table of links
-    would only repeat both.
+    ``handle`` is the first of ``handles``. Kept in the chart's own row
+    (``metadata.harness``): the row is already owned by its user and deleted
+    with its session, and a run's charts are found from the other side
+    through the run's trace, so a table of links would only repeat both.
     """
 
     run_id: str
     mode: Mode
     handle: str | None
+    handles: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.handles and self.handle is not None:
+            object.__setattr__(self, "handles", (self.handle,))
 
     def to_json(self) -> dict[str, Any]:
-        return {"run_id": self.run_id, "mode": self.mode.model_dump(mode="json"), "handle": self.handle}
+        return {
+            "run_id": self.run_id, "mode": self.mode.model_dump(mode="json"), "handle": self.handle,
+            "handles": list(self.handles),
+        }
+
+    def view(self) -> dict[str, Any]:
+        """The ``run_id`` and ``mode`` a chart or its artifact carries on the wire."""
+        return {"run_id": self.run_id, "mode": self.mode.view()}
 
     @classmethod
     def of(cls, payload: dict[str, Any]) -> ChartLink | None:
@@ -69,14 +81,16 @@ class ChartLink:
         link = metadata.get(LINK_KEY) if isinstance(metadata, dict) else None
         if not isinstance(link, dict):
             return None
-        run_id, handle = link.get("run_id"), link.get("handle")
+        run_id, handle, handles = link.get("run_id"), link.get("handle"), link.get("handles")
         if not isinstance(run_id, str) or not RUN_ID_PATTERN.fullmatch(run_id):
             return None
         try:
             mode = Mode.model_validate(link.get("mode"))
         except ValidationError:
             return None
-        return cls(run_id=run_id, mode=mode, handle=handle if isinstance(handle, str) else None)
+        listed = tuple(h for h in handles if isinstance(h, str)) if isinstance(handles, list) else ()
+        first = handle if isinstance(handle, str) else (listed[0] if listed else None)
+        return cls(run_id=run_id, mode=mode, handle=first, handles=listed)
 
 
 class ChartService:

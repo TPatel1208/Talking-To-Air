@@ -9,6 +9,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import unittest
 import uuid
 from typing import Any
@@ -159,7 +160,11 @@ class ScriptedSupervisorTurnTests(SupervisorCase):
         self.assertEqual(announce["detail"]["steps"], list(spec.order()))
         self.assertEqual(announce["detail"]["mode"], mode)
         self.assertEqual((announce["detail"]["workflow"], announce["detail"]["version"]), ("map", latest))
-        steps = [s for s in statuses if s is not announce and s.get("run_id") == run_id]
+        own = [s for s in statuses if s.get("run_id") == run_id]
+        # The run's last frame closes its row, with the status it ended in.
+        self.assertEqual(own[-1], {"message": "Done", "stage": "finished", "detail": {"status": "done"}, "run_id": run_id})
+        self.assertEqual([s.get("stage") for s in own].count("finished"), 1)
+        steps = [s for s in own[:-1] if s is not announce]
         self.assertTrue(steps)
         # Inputs are resolved before the first step, under ids of their own.
         self.assertTrue(all(s["detail"]["step"] in spec.order() or s["detail"]["step"].startswith("input.") for s in steps))
@@ -189,9 +194,8 @@ class ScriptedSupervisorTurnTests(SupervisorCase):
         [reference] = turn.charts
         self.assertEqual((reference["chart_id"], reference["reference"]), (chart["chart_id"], True))
         self.assertNotIn("series", reference)
-        drawn = ("run_id", "mode")
-        self.assertEqual([a.model_dump(exclude_none=True) for a in turn.artifacts],
-                         [{k: v for k, v in a.items() if k not in drawn} for a in done["artifacts"]])
+        # The transcript keeps each artifact's run and mode, so history shows the same badges.
+        self.assertEqual([a.model_dump(exclude_none=True) for a in turn.artifacts], done["artifacts"])
         self.assertEqual([r.view() for r in turn.results], done["results"])
         self.assertEqual(turn.suggested_followups, done.get("suggested_followups", []))
 
@@ -635,6 +639,84 @@ class HostFrameTests(unittest.IsolatedAsyncioTestCase):
         [turn] = self.transcripts.turns
         self.assertEqual((turn.status, turn.answer_text), ("stopped", "Half an answer"))
 
+    async def test_a_reader_that_goes_away_mid_turn_leaves_a_stopped_row_with_what_the_turn_sent_as_it_ended(self):
+        class LastWord:
+            def __init__(self) -> None:
+                self.ended = False
+
+            async def turn(self, context: Any, build_env: Any, earthdata: Any, message: str) -> Any:
+                context.events.text("Half an answer")
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    context.events.text(", then a last word")
+                    self.ended = True
+                    raise
+
+        supervisor = LastWord()
+        stream = make_chat(supervisor, self.root).stream_chat_events("hi", "thread-1", "user-a", "req-1")
+        first = await stream.__anext__()
+        self.assertEqual(parse([first]), [("text", {"content": "Half an answer"})])
+        await stream.aclose()
+
+        self.assertTrue(supervisor.ended)
+        [turn] = self.transcripts.turns
+        self.assertEqual((turn.status, turn.answer_text), ("stopped", "Half an answer, then a last word"))
+
+    async def test_a_stop_while_the_turn_is_being_written_still_writes_it_once(self):
+        writing, release = asyncio.Event(), asyncio.Event()
+
+        class SlowTranscripts(MemoryTranscripts):
+            async def append_turn(self, turn: Any) -> Any:
+                writing.set()
+                await release.wait()
+                return await super().append_turn(turn)
+
+        transcripts = SlowTranscripts()
+        chat = make_chat(PlaybackSupervisor(("text", "All done.")), self.root)
+
+        async def consume() -> None:
+            async for _ in chat.stream_chat_events("hi", "thread-1", "user-a", "req-1"):
+                pass
+
+        with memory_repositories(transcripts, self.charts):
+            task = asyncio.create_task(consume())
+            await writing.wait()
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            release.set()
+            for _ in range(20):
+                await asyncio.sleep(0)
+
+        [turn] = transcripts.turns
+        self.assertEqual((turn.status, turn.answer_text), ("done", "All done."))
+
+    async def test_a_supervisor_that_raises_a_cancellation_from_inside_ends_the_turn_at_once(self):
+        supervisor = PlaybackSupervisor(("text", "Working"), ("raise", asyncio.CancelledError()))
+        with self.assertLogs("tta_backend.services.harness_chat", level="ERROR"):
+            frames = await asyncio.wait_for(self.collect.run(make_chat(supervisor, self.root, timeout=60.0)), 5.0)
+
+        self.assertEqual(events(frames), ["text", "error"])
+        self.assertEqual(last(frames, "error"), {"detail": render_error_answer("contract", "request")})
+        [turn] = self.transcripts.turns
+        self.assertEqual(turn.status, "error")
+        self.assertTrue(turn.answer_text.startswith("Working\n\n"))
+
+    async def test_a_status_line_put_from_a_worker_thread_before_the_turn_ended_is_not_lost(self):
+        class FromAThread:
+            async def turn(self, context: Any, build_env: Any, earthdata: Any, message: str) -> Any:
+                worker = threading.Thread(target=lambda: context.events.progress("Drawn off the loop", stage="render"))
+                worker.start()
+                # Joined without yielding to the loop, so the worker's put is still on its way when the turn returns.
+                worker.join()
+                return make_turn("Done.")
+
+        frames = await self.collect.run(make_chat(FromAThread(), self.root))
+
+        self.assertEqual(events(frames), ["status", "done"])
+        self.assertEqual(parse(frames)[0][1], {"message": "Drawn off the loop", "stage": "render"})
+
     async def test_silence_is_filled_with_a_heartbeat(self):
         blocked = asyncio.Event()
         supervisor = PlaybackSupervisor(blocked, ("text", "Done."))
@@ -924,6 +1006,34 @@ class TranscriptHistoryTests(unittest.IsolatedAsyncioTestCase):
         ])
         with memory_repositories(transcripts, charts):
             self.assertEqual(await transcript_history("thread-1", "user-b", ChartService()), [])
+
+    async def test_a_reloaded_thread_carries_the_run_and_mode_badges_the_live_one_did(self):
+        stores = memory_stores()
+        run_id = new_run_id()
+        mode = Mode.validated("trend", 2)
+        await stores.traces.start_run(Run(
+            id=run_id, user_id="user-a", conversation_id="thread-1", mode=mode,
+            started=datetime.datetime(2024, 7, 1, tzinfo=datetime.UTC),
+        ))
+        transcripts, charts = MemoryTranscripts(), MemoryCharts()
+        collect = Collecting(transcripts)
+        supervisor = PlaybackSupervisor(
+            ("chart", {**CHART, "metadata": {"run_id": run_id, "source_handles": ["obs_1"]}}),
+            ("text", "Drawn."),
+        )
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        with memory_repositories(transcripts, charts):
+            frames = await collect.run(make_chat(supervisor, tmp.name, stores=stores))
+            [message] = [m for m in await transcript_history("thread-1", "user-a", ChartService())
+                         if m["role"] == "assistant"]
+
+        live_chart, live_artifact = last(frames, "chart"), last(frames, "artifact")
+        self.assertEqual((live_chart["run_id"], live_chart["mode"]), (run_id, mode.view()))
+        [chart] = message["charts"]
+        self.assertEqual((chart["run_id"], chart["mode"]), (run_id, mode.view()))
+        self.assertEqual(message["artifacts"], [live_artifact])
+        self.assertEqual((live_artifact["run_id"], live_artifact["mode"]), (run_id, mode.view()))
 
 
 _REQUIRED = ["fastapi", "httpx", "jwt"]

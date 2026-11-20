@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
@@ -43,6 +44,10 @@ class RetrievalJobStore(Protocol):
         """Remove the job; forgetting one that is not saved does nothing."""
         ...
 
+    async def forget_jobs(self, user_id: str, job_handles: Sequence[str]) -> None:
+        """Remove every saved job of the user's whose job handle is in ``job_handles``."""
+        ...
+
 
 class InMemoryRetrievalJobStore:
     def __init__(self) -> None:
@@ -58,6 +63,11 @@ class InMemoryRetrievalJobStore:
 
     async def forget(self, user_id: str, fingerprint: str) -> None:
         self._jobs.pop((user_id, fingerprint), None)
+
+    async def forget_jobs(self, user_id: str, job_handles: Sequence[str]) -> None:
+        doomed = set(job_handles)
+        for key in [k for k, job in self._jobs.items() if k[0] == user_id and job.job_handle in doomed]:
+            del self._jobs[key]
 
 
 async def ensure_tables(connect: Connect) -> None:
@@ -111,4 +121,14 @@ class PostgresRetrievalJobStore:
             await conn.execute(
                 "DELETE FROM harness_retrieval_jobs WHERE user_id = %s AND fingerprint = %s",
                 (user_id, fingerprint),
+            )
+
+    async def forget_jobs(self, user_id: str, job_handles: Sequence[str]) -> None:
+        doomed = list(dict.fromkeys(job_handles))
+        if not doomed:
+            return
+        async with self._connect() as conn:
+            await conn.execute(
+                "DELETE FROM harness_retrieval_jobs WHERE user_id = %s AND job_handle = ANY(%s)",
+                (user_id, doomed),
             )

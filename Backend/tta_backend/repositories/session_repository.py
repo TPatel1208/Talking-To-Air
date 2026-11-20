@@ -4,8 +4,12 @@ import asyncio
 import logging
 from typing import Any
 
+from tta_backend.harness.deletion import delete_conversation
+from tta_backend.harness.handles.payloads import PayloadStore
 from tta_backend.harness.run_context import Identity
+from tta_backend.harness.storage import postgres_stores
 from tta_backend.harness.supervisor import thread_id as supervisor_thread_id
+from tta_backend.infrastructure.settings import get_settings
 from tta_backend.repositories.artifact_repository import delete_artifacts_for_session
 from tta_backend.repositories.chart_repository import delete_charts_for_session
 from tta_backend.repositories.session_metadata_repository import (
@@ -18,6 +22,15 @@ from tta_backend.services import overlay_store
 from tta_backend.utils.db import pg_connection
 
 logger = logging.getLogger(__name__)
+
+
+async def delete_harness_records(thread_id: str, user_id: str) -> None:
+    """The conversation's harness runs, trace entries, results, retrieval jobs only it used, handles and payload files."""
+    from tta_backend.services.harness_chat import payload_root
+
+    await delete_conversation(
+        postgres_stores(pg_connection), PayloadStore(payload_root(get_settings())), user_id, thread_id,
+    )
 
 
 class SessionRepository:
@@ -49,6 +62,8 @@ class SessionRepository:
                     (checkpoint_threads,),
                 )
             await conn.commit()
+        # The runs before the charts that link to them, so no surviving run names a deleted chart.
+        await delete_harness_records(thread_id, user_id)
         await delete_transcript(thread_id, user_id)
         deleted_charts = await delete_charts_for_session(thread_id, user_id)
         # The overlay PNGs after the rows that name them, so a surviving chart

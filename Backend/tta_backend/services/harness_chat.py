@@ -14,7 +14,9 @@ Frames, in order:
   labels}``, and its steps' frames carry ``detail.step``; an exploration task
   is shown first with ``stage`` ``explore`` and ``detail`` ``{objective,
   bundle, queued: true}``, then opens with the same stage and ``detail``
-  ``{objective, bundle}``. Lines from the older helpers (area, coverage,
+  ``{objective, bundle}``. Each workflow run, exploration task and the
+  turn's lookup run ends with one frame of ``stage`` ``finished`` and
+  ``detail`` ``{status}``. Lines from the older helpers (area, coverage,
   opening retrieved data) arrive as ``status`` frames with their own stages,
   carrying the run id when a run's call or retrieval open raised them;
 - ``text`` ``{content}`` for each piece of the answer as it streams;
@@ -24,7 +26,8 @@ Frames, in order:
 - ``chart`` with the stored chart row, then ``artifact`` with its gallery
   reference when the chart has one; ``artifact`` for each stored table. Each
   chart is stored once and sent once. A chart or table a run drew carries
-  that run's ``run_id`` and ``mode`` ``{kind, label, workflow}``;
+  that run's ``run_id`` and ``mode`` ``{kind, label, workflow}``, in the
+  transcript and the history too;
 - ``done`` ``{thread_id, response, artifacts, tool_calls, results, label,
   suggested_followups?, variable_choice?}``; each of ``results`` is
   ``{run_id, status, mode, reason, connector}``, ``connector`` naming the
@@ -35,7 +38,12 @@ Frames, in order:
   for it;
 - on a failed turn, ``error`` ``{detail}`` before ``done``; on a timeout or
   when admission refuses the turn, ``error`` then a short ``done``; on any
-  other exception, ``error`` alone.
+  other exception, or a cancellation raised inside the turn, ``error`` alone.
+
+A turn that is stopped, or whose reader goes away, is cancelled and given
+``STOP_WAIT_SECONDS`` to end; what it sent by then is written to the
+transcript as ``stopped``. A transcript write already under way is finished
+whatever happens to the stream.
 """
 from __future__ import annotations
 
@@ -49,7 +57,8 @@ import os
 import threading
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable, Iterable, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterable, Sequence
+from contextlib import aclosing
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Protocol, cast
@@ -126,6 +135,16 @@ PACKS_ROOT = Path(__file__).resolve().parents[2] / "packs"
 EARTHDATA_UNAVAILABLE = "The satellite data layer is temporarily unavailable."
 
 TranscriptStatus = Literal["done", "stopped", "error"]
+# How long a stopped turn is given to end before its transcript row is written without it.
+STOP_WAIT_SECONDS = 5.0
+
+
+class _TurnRaised(Exception):
+    """Carries a turn's ending that is not an Exception, such as a cancellation from inside it, to the error path."""
+
+    def __init__(self, error: BaseException) -> None:
+        super().__init__(type(error).__name__)
+        self.error = error
 
 
 def sse(event: str, data: dict[str, Any]) -> str:
@@ -166,15 +185,36 @@ Put = Callable[[tuple[str, Any]], None]
 
 
 def _putter(queue: asyncio.Queue[tuple[str, Any]]) -> Put:
-    """Puts on ``queue`` from the loop's thread or any other."""
+    """Puts on ``queue`` from the loop's thread or any other, in the order they were made.
+
+    A put from another thread reaches the queue through the loop. While one
+    is still on its way, a put from the loop's thread is scheduled behind it
+    rather than put at once, so nothing put earlier, the turn's end
+    included, lands after a later put.
+    """
     loop = asyncio.get_running_loop()
     loop_thread = threading.get_ident()
+    lock = threading.Lock()
+    in_flight = 0
+
+    def deliver(item: tuple[str, Any]) -> None:
+        nonlocal in_flight
+        with lock:
+            in_flight -= 1
+        queue.put_nowait(item)
 
     def put(item: tuple[str, Any]) -> None:
-        if threading.get_ident() == loop_thread:
-            queue.put_nowait(item)
-        else:
-            loop.call_soon_threadsafe(queue.put_nowait, item)
+        nonlocal in_flight
+        with lock:
+            if threading.get_ident() != loop_thread:
+                in_flight += 1
+                loop.call_soon_threadsafe(deliver, item)
+                return
+            if in_flight:
+                in_flight += 1
+                loop.call_soon(deliver, item)
+                return
+        queue.put_nowait(item)
 
     return put
 
@@ -255,11 +295,12 @@ def run_bound_open(open_retrieval: OpenRetrieval, run_id: str) -> OpenRetrieval:
     return open_bound
 
 
-def _source_handle(payload: dict[str, Any]) -> str | None:
+def _source_handles(payload: dict[str, Any]) -> tuple[str, ...]:
     metadata = payload.get("metadata")
     handles = metadata.get("source_handles") if isinstance(metadata, dict) else None
-    first = handles[0] if isinstance(handles, list) and handles else None
-    return first if isinstance(first, str) else None
+    if not isinstance(handles, list):
+        return ()
+    return tuple(dict.fromkeys(h for h in handles if isinstance(h, str)))
 
 
 class StoredArtifacts:
@@ -305,7 +346,10 @@ class StoredArtifacts:
 
     async def store_chart(self, payload: dict[str, Any]) -> ArtifactRef:
         run = await self._run_of(payload.get("metadata"))
-        link = None if run is None else ChartLink(run_id=run[0], mode=run[1], handle=_source_handle(payload))
+        handles = _source_handles(payload)
+        link = None if run is None else ChartLink(
+            run_id=run[0], mode=run[1], handle=handles[0] if handles else None, handles=handles,
+        )
         if carries_media(payload) and not payload.get("chart_id"):
             payload = {**payload, "chart_id": str(uuid.uuid4())}
             # Into the payload's own frames and overlay blocks, which the caller's copy shares.
@@ -647,13 +691,16 @@ class HarnessChat:
         # The earthdata tools read the user from this context. No cube write
         # may start while a turn runs: it would compete with the turn for
         # dask, the HDF5 lock and memory.
+        # Closed with this stream, so a reader going away reaches the turn's own handling at once.
+        frames = aclosing(self._turn_frames(message, thread_id, user_id, request_id))
         with user_id_context(user_id), cube_cache.active_turn():
-            async for frame in self._turn_frames(message, thread_id, user_id, request_id):
-                yield frame
+            async with frames as turn_frames:
+                async for frame in turn_frames:
+                    yield frame
 
     async def _turn_frames(
         self, message: str, thread_id: str, user_id: str, request_id: str
-    ) -> AsyncIterator[str]:
+    ) -> AsyncGenerator[str, None]:
         started = time.monotonic()
         queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
         put = _putter(queue)
@@ -677,14 +724,23 @@ class HarnessChat:
             streaming.get_call_budget()
             # Status lines from the helpers the tools call reach the stream through here.
             streaming.bind_status_emitter(status_emitter(cast(StreamEvents, context.events)))
+            # Whatever ends the turn, one terminal item reaches the queue, so the frame loop never waits on a turn
+            # that is over.
+            outcome: tuple[str, Any] = ("__error__", RuntimeError("the turn ended without an outcome"))
             try:
-                put(("__turn__", await self.supervisor.turn(context, ports.build_env, ports.earthdata, message)))
-            except Exception as exc:  # noqa: BLE001 -- ends the turn with an error frame below
-                put(("__error__", exc))
+                outcome = ("__turn__", await self.supervisor.turn(context, ports.build_env, ports.earthdata, message))
+            except BaseException as exc:
+                outcome = ("__error__", exc)
+                if not isinstance(exc, Exception | asyncio.CancelledError):
+                    raise
+            finally:
+                put(outcome)
 
         task = asyncio.create_task(run())
         turn_timeout = asyncio.timeout(self.chat_turn_timeout_seconds)
         turn: Turn | None = None
+        # Set once a transcript row for the turn is written or being written, so a Stop never writes a second.
+        recorded = False
         try:
             try:
                 async with turn_timeout:
@@ -703,41 +759,76 @@ class HarnessChat:
                             continue
                         last_activity = loop.time()
                         if kind == "__error__":
-                            raise data
+                            raise data if isinstance(data, Exception) else _TurnRaised(data)
                         if kind == "__turn__":
                             turn = data
                             continue
                         for frame in await self._live_frames(kind, data, artifacts, seen, thread_id, user_id):
                             yield frame
-            except asyncio.CancelledError:
-                task.cancel()
-                await asyncio.shield(self._record(message, thread_id, user_id, "".join(seen.text), seen, "stopped"))
-                raise
             except Exception as exc:
                 task.cancel()
-                answer, frames = self._failure(exc, turn_timeout, request_id, thread_id)
+                failure = exc.error if isinstance(exc, _TurnRaised) else exc
+                answer, frames = self._failure(failure, turn_timeout, request_id, thread_id)
                 partial = "".join(seen.text).strip()
                 text = f"{partial}\n\n{answer}" if partial else answer
-                await self._record(message, thread_id, user_id, text, seen, "error")
+                recorded = True
+                await asyncio.shield(self._record(message, thread_id, user_id, text, seen, "error"))
                 for frame in frames:
                     yield frame
                 return
+
+            recorded = True
+            summaries = await asyncio.shield(self._close_turn(message, thread_id, user_id, turn, seen))
+            if turn.status == "failed":
+                yield sse("error", {"detail": render_error_answer(CATEGORY_CONTRACT, "request")})
+            yield sse("done", self._done_payload(thread_id, turn, seen, summaries))
+            self._log_request_complete(request_id, thread_id, started)
+        except (asyncio.CancelledError, GeneratorExit):
+            # Stopped, or the reader went away, mid-turn: the turn is cancelled and what it sent is kept as stopped.
+            if not recorded:
+                recorded = True
+                await asyncio.shield(
+                    self._stopped(task, queue, artifacts, seen, message, thread_id, user_id),
+                )
+            raise
         finally:
             if not task.done():
                 task.cancel()
 
+    async def _close_turn(
+        self, message: str, thread_id: str, user_id: str, turn: Turn, seen: _Seen,
+    ) -> list[TranscriptResult]:
+        """The turn's result summaries, once its transcript row is written."""
         sources = await data_sources(self.stores.handles, user_id, turn.results)
         summaries = await result_summaries(turn.results, self.stores.traces, user_id, self._connectors)
         summaries.extend(unavailable_summaries(turn.unavailable))
-        failed = turn.status == "failed"
         await self._record(
-            message, thread_id, user_id, turn.text, seen, "error" if failed else "done",
+            message, thread_id, user_id, turn.text, seen, "error" if turn.status == "failed" else "done",
             sources=sources, label=answer_mode(turn.results), results=summaries, followups=turn.followups,
         )
-        if failed:
-            yield sse("error", {"detail": render_error_answer(CATEGORY_CONTRACT, "request")})
-        yield sse("done", self._done_payload(thread_id, turn, seen, summaries))
-        self._log_request_complete(request_id, thread_id, started)
+        return summaries
+
+    async def _stopped(
+        self,
+        task: asyncio.Task[None],
+        queue: asyncio.Queue[tuple[str, Any]],
+        artifacts: StoredArtifacts,
+        seen: _Seen,
+        message: str,
+        thread_id: str,
+        user_id: str,
+    ) -> None:
+        """Cancel the turn, wait a bounded time for it to end, keep what it sent meanwhile, and write it as stopped."""
+        task.cancel()
+        await asyncio.wait({task}, timeout=STOP_WAIT_SECONDS)
+        while not queue.empty():
+            kind, data = queue.get_nowait()
+            if kind in ("text", "artifact", "chart"):
+                try:
+                    await self._live_frames(kind, data, artifacts, seen, thread_id, user_id)
+                except Exception:
+                    logger.warning("stopped_turn_item_lost", extra={"_thread_id": thread_id, "_kind": kind})
+        await self._record(message, thread_id, user_id, "".join(seen.text), seen, "stopped")
 
     async def _live_frames(
         self, kind: str, data: Any, artifacts: StoredArtifacts, seen: _Seen, thread_id: str, user_id: str,
@@ -774,7 +865,7 @@ class HarnessChat:
         except ValidationError:
             logger.warning("chart_reference_invalid", extra={"_chart_id": stored.get("chart_id")})
         link = ChartLink.of(stored)
-        drawn = {} if link is None else {"run_id": link.run_id, "mode": link.mode.view()}
+        drawn = {} if link is None else link.view()
         frames = [sse("chart", {**stored, **drawn})]
         try:
             reference = build_artifact_reference(stored)
@@ -879,19 +970,26 @@ class HarnessChat:
 async def transcript_history(thread_id: str, user_id: str, chart_service: ChartService) -> list[dict[str, Any]]:
     """The conversation as the user saw it: a user and an assistant message per
     transcript turn, the assistant's with its label, results and suggested
-    follow-ups. Charts are looked up in one read; one no longer stored is left out."""
+    follow-ups. Charts are looked up in one read; one no longer stored is left
+    out. A chart or artifact a run drew carries that run's ``run_id`` and
+    ``mode``, as its live frame did."""
     turns = await transcript_repository.list_turns(thread_id, user_id)
     resolved = iter(await chart_service.resolve_charts([c for t in turns for c in t.charts], user_id))
     messages: list[dict[str, Any]] = []
     for turn in turns:
         user, assistant = turn.to_history_messages()
         charts = [next(resolved) for _ in turn.charts]
-        assistant["charts"] = [chart for chart in charts if chart is not None]
+        assistant["charts"] = [_drawn(chart) for chart in charts if chart is not None]
         assistant["label"] = None if turn.label is None else turn.label.label()
         assistant["results"] = [result.view() for result in turn.results]
         assistant["suggested_followups"] = list(turn.suggested_followups)
         messages.extend((user, assistant))
     return messages
+
+
+def _drawn(chart: dict[str, Any]) -> dict[str, Any]:
+    link = ChartLink.of(chart)
+    return chart if link is None else {**chart, **link.view()}
 
 
 # The host built at startup

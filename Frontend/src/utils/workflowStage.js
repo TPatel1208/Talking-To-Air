@@ -87,15 +87,30 @@ export function runIdOf(data) {
   return typeof nested === 'string' && nested ? nested : null
 }
 
+const FINISHED = 'finished'
+
 function updateRun(runs, data) {
   const runId = runIdOf(data)
   const existing = runs.find(row => row.runId === runId)
   const row = existing || {
     runId, kind: 'task', name: null, version: null, mode: null, objective: null,
     steps: [], step: null, stage: null, message: '', done: false,
+    // Set while an exploration task waits for a free slot.
+    queued: false,
+    // The order the run started in, once it has; a queued task has not.
+    started: null,
+    // The status the run's `finished` frame named.
+    status: null,
   }
   const detail = data.detail && typeof data.detail === 'object' ? data.detail : {}
   const next = { ...row }
+  if (data.stage === FINISHED) {
+    // The run's closing frame: the row is done and keeps what it was last doing.
+    next.done = true
+    next.status = typeof detail.status === 'string' ? detail.status : row.status
+    next.queued = false
+    return existing ? runs.map(r => (r === existing ? next : r)) : [...runs, next]
+  }
   if (typeof data.stage === 'string' && data.stage.startsWith(WORKFLOW_PREFIX)) {
     next.kind = 'workflow'
     next.name = detail.workflow ?? data.stage.slice(WORKFLOW_PREFIX.length)
@@ -106,17 +121,37 @@ function updateRun(runs, data) {
     next.kind = 'explore'
     next.objective = detail.objective ?? row.objective
   }
+  next.queued = data.stage === 'explore' && detail.queued === true
+  if (!next.queued && next.started == null) {
+    next.started = runs.reduce((most, r) => Math.max(most, r.started ?? -1), -1) + 1
+  }
   if (typeof detail.step === 'string') next.step = detail.step
   next.stage = data.stage ?? row.stage
   next.message = data.message ?? row.message
-  next.done = data.stage === 'finished' || row.done
   return existing ? runs.map(r => (r === existing ? next : r)) : [...runs, next]
+}
+
+// The run a failed turn failed at: the one its results or its own closing frame
+// say failed, else the most recently started run still going.
+function failedRun(runs, data) {
+  const results = Array.isArray(data?.results) ? data.results : []
+  const named = results.find(result => result?.status === 'failed' && result.run_id
+    && runs.some(row => row.runId === result.run_id))
+  if (named) return runs.find(row => row.runId === named.run_id)
+  const closedFailed = runs.find(row => row.done && row.status === 'failed')
+  if (closedFailed) return closedFailed
+  const going = runs.filter(row => !row.done)
+  if (!going.length) return null
+  const started = going.filter(row => row.started != null)
+  if (!started.length) return going[going.length - 1]
+  return started.reduce((latest, row) => (row.started > latest.started ? row : latest))
 }
 
 // What a run row shows: a title, where it is, and what it is doing now.
 export function runRowView(row) {
   const current = stageLabel(row.stage)
-  const activity = row.done ? 'Done' : (current || cleanStatusMessage(row.message) || '')
+  const ended = !row.status || row.status === 'done' ? 'Done' : humanize(row.status)
+  const activity = row.done ? ended : (current || cleanStatusMessage(row.message) || '')
   if (row.kind === 'workflow') {
     const total = row.steps.length
     const index = row.step == null ? -1 : row.steps.indexOf(row.step)
@@ -126,6 +161,9 @@ export function runRowView(row) {
     return { title: humanize(row.name), position, activity: row.stage?.startsWith(WORKFLOW_PREFIX) ? '' : activity }
   }
   if (row.kind === 'explore') {
+    if (row.queued) {
+      return { title: `Waiting to explore: ${row.objective || ''}`.trim(), position: '', activity: '', current: '' }
+    }
     return { title: 'Exploring', position: '', activity: row.objective || activity, current: row.stage === 'explore' ? '' : activity }
   }
   return { title: activity || stageLabel(row.stage) || row.stage || '', position: '', activity: '' }
@@ -196,9 +234,9 @@ export function applyWorkflowEvent(state, event, data) {
       if (running) {
         return { ...state, failedStage: running.stage, failedLane: running.label, active: false }
       }
-      const runningRun = (state.runs || []).find(row => !row.done)
+      const runningRun = failedRun(state.runs || [], data)
       if (runningRun) {
-        const { title } = runRowView(runningRun)
+        const { title } = runRowView({ ...runningRun, done: false, queued: false })
         return { ...state, failedStage: runningRun.stage, failedLane: title, active: false }
       }
       return { ...state, failedStage: state.stage, active: false }

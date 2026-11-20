@@ -59,13 +59,58 @@ export function fitSmokeMap(map, bounds, container) {
 
 const normalized = new WeakMap()
 
+// The quantity the harness's HMS smoke source records on its polygons handles.
+const SMOKE_QUANTITY = 'smoke_extent'
+
+function polygonFeatures(chart) {
+  return (chart?.polygons || []).flatMap(entry => entry?.geojson?.features || [])
+}
+
+// Whether a `polygon_map` holds smoke: its features carry a density, or it has
+// none and every source behind it is the smoke extent.
+export function isSmokePolygonMap(chart) {
+  if (chart?.type !== 'polygon_map') return false
+  const features = polygonFeatures(chart)
+  if (features.length) return features.some(feature => feature?.properties?.density != null)
+  const sources = chart.provenance?.sources || []
+  return sources.length > 0 && sources.every(source => source?.quantity === SMOKE_QUANTITY || source?.kind === 'points')
+    && sources.some(source => source?.quantity === SMOKE_QUANTITY)
+}
+
+// A chart's point overlay (`overlays.points`) as a GeoJSON FeatureCollection; empty when it has none.
+export function overlayPointsGeoJSON(chart) {
+  const points = chart?.overlays?.points?.points || []
+  return {
+    type: 'FeatureCollection',
+    features: points
+      .filter(point => Number.isFinite(point?.lon) && Number.isFinite(point?.lat))
+      .map(point => ({
+        type: 'Feature',
+        geometry: { type: 'Point', coordinates: [point.lon, point.lat] },
+        properties: { id: point.id, name: point.name ?? null, value: point.value ?? null },
+      })),
+  }
+}
+
+// A non-smoke `polygon_map` as the generic polygon panel draws it: its polygons
+// as one FeatureCollection, its point overlay, and the bounds to fit.
+export function polygonMapLayers(chart) {
+  const polygons = { type: 'FeatureCollection', features: polygonFeatures(chart) }
+  return {
+    polygons,
+    points: overlayPointsGeoJSON(chart),
+    bounds: smokeMapBounds({ bounds: chart?.bounds, geojson: polygons }),
+  }
+}
+
 // The harness stores smoke as a generic `polygon_map` (one FeatureCollection
-// per polygons handle); the smoke panel reads the `smoke_map` shape. Other
-// payloads pass through unchanged, and a given payload maps to one stable object.
+// per polygons handle); the smoke panel reads the `smoke_map` shape. Only a
+// polygon map of smoke is converted, keeping its `overlays.points`; any other
+// payload passes through unchanged, and a given payload maps to one stable object.
 export function asSmokeMap(chart) {
-  if (chart?.type !== 'polygon_map') return chart
+  if (!isSmokePolygonMap(chart)) return chart
   if (normalized.has(chart)) return normalized.get(chart)
-  const features = (chart.polygons || []).flatMap(entry => entry?.geojson?.features || [])
+  const features = polygonFeatures(chart)
   const counts = { light: 0, medium: 0, heavy: 0, unknown: 0 }
   for (const feature of features) {
     const density = feature?.properties?.density

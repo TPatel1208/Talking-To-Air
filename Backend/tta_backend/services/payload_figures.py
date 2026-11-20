@@ -21,6 +21,7 @@ from matplotlib.colors import ListedColormap
 from matplotlib.figure import Figure
 
 from tta_backend.services.export_service import ExportService
+from tta_backend.utils.csv_cells import safe_cell
 
 # Chart types each function can draw or tabulate from the payload.
 FIGURE_TYPES = frozenset({"heatmap", "timeseries", "profile"})
@@ -137,10 +138,11 @@ async def chart_rows(payload: dict[str, Any]) -> list[list[Any]] | None:
 
 
 def csv_bytes(rows: Iterable[Iterable[Any]]) -> bytes:
+    """``rows`` as CSV; a text cell a spreadsheet would take for a formula is quoted (``safe_cell``)."""
     output = io.StringIO()
     writer = csv.writer(output)
     for row in rows:
-        writer.writerow(row)
+        writer.writerow([safe_cell(cell) for cell in row])
     return output.getvalue().encode("utf-8")
 
 

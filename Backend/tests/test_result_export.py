@@ -22,9 +22,10 @@ if TESTS_DIR not in sys.path:
 from harness_chat_helpers import MemoryCharts, MemoryTranscripts, memory_repositories  # noqa: E402
 from tests.test_harness_sources_satellite import NO2  # noqa: E402
 from tests.test_harness_workflow_packs_run import JUNE, PackRun  # noqa: E402
+from tta_backend.harness.handles.model import Descriptor, HandleRecord, ServicePayload  # noqa: E402
 from tta_backend.harness.results import Mode, Result  # noqa: E402
 from tta_backend.harness.testing import FakeEarthdata, env_factory  # noqa: E402
-from tta_backend.harness.trace import Run, new_run_id  # noqa: E402
+from tta_backend.harness.trace import NewEntry, Run, new_run_id  # noqa: E402
 from tta_backend.services.artifact_store import ArtifactStore  # noqa: E402
 from tta_backend.services.chart_service import ChartLink, ChartService  # noqa: E402
 from tta_backend.services.harness_chat import StoredArtifacts  # noqa: E402
@@ -176,6 +177,62 @@ class MapExportTests(ExportCase):
         self.assertNotIn("note", view)
         self.assertEqual(await chart_citations(self.f.stores, "user-a", self.link, self.earthdata), [CITATION])
 
+    async def test_a_chart_drawn_from_several_handles_walks_all_of_them(self):
+        stores, now = self.f.stores, self.f.context.clock.now()
+        await stores.handles.record_retrieval(HandleRecord(
+            id="obs_9", kind="grid", origin="retrieval", user_id="user-a", conversation_id="conv-1",
+            descriptor=Descriptor(summary="TROPOMI_NO2 over New Jersey", product="TROPOMI_NO2"),
+            created_at=now, payload=ServicePayload(),
+        ))
+        other = new_run_id()
+        await stores.traces.start_run(Run(
+            id=other, user_id="user-a", conversation_id="conv-1", mode=Mode.exploratory(), started=now,
+        ))
+        await stores.traces.append("user-a", NewEntry(
+            run_id=other, kind="use", status="done", started=now, seconds=1.0,
+            capability="sources.satellite.get_data", params={},
+            result={"status": "done", "handle": "obs_9", "product": "TROPOMI_NO2", "values": {"rule": "user_named"}},
+        ))
+        await stores.traces.finish_run("user-a", other, "done", now)
+        tropomi = {**CITATION, "handle": "dataset_tropomi", "doi": "10.5067/TROPOMI"}
+        earthdata = FakeEarthdata({
+            "get_provenance": lambda args: {
+                "handle": args["handle"], "events": [],
+                "ancestors": [{"handle": "dataset_tropomi" if args["handle"] == "obs_9" else "dataset_tempo", "depth": 1}],
+            },
+            "cite_dataset": lambda args: tropomi if args["dataset_handle"] == "dataset_tropomi" else CITATION,
+        })
+        link = ChartLink(run_id=self.link.run_id, mode=self.link.mode, handle="obs_1", handles=("obs_1", "obs_9"))
+
+        view = await chart_provenance(stores, "user-a", link, earthdata)
+
+        self.assertEqual(view["handles"], ["obs_1", "obs_9"])
+        nodes = [node["handle"] for node in view["nodes"]]
+        for handle in ("obs_1", "obs_9", "dataset_tempo", "dataset_tropomi"):
+            self.assertIn(handle, nodes)
+        self.assertEqual(view["product"]["key"], "TEMPO_NO2")
+        self.assertEqual(view["products"], [
+            {"key": "TEMPO_NO2", "rule": "highest_rank", "rule_text": rule_text("TEMPO_NO2", "highest_rank")},
+            {"key": "TROPOMI_NO2", "rule": "user_named", "rule_text": rule_text("TROPOMI_NO2", "user_named")},
+        ])
+        self.assertEqual(await chart_citations(stores, "user-a", link, earthdata), [CITATION, tropomi])
+
+    async def test_a_chart_link_keeps_every_source_handle(self):
+        stored = ChartLink(run_id=self.link.run_id, mode=self.link.mode, handle="obs_1", handles=("obs_1", "obs_9"))
+        self.assertEqual(ChartLink.of({"metadata": {"harness": stored.to_json()}}), stored)
+        # A link written with only its first handle still reads.
+        only_first = {"run_id": self.link.run_id, "mode": self.link.mode.model_dump(mode="json"), "handle": "obs_1"}
+        self.assertEqual(ChartLink.of({"metadata": {"harness": only_first}}).handles, ("obs_1",))
+
+    async def test_a_chart_no_longer_stored_is_named_as_a_figure_in_the_archive(self):
+        del self.charts.rows[self.result.charts[0]]
+        content = await self.exporter().archive("user-a", self.result.trace_id)
+
+        with zipfile.ZipFile(io.BytesIO(content)) as archive:
+            left_out = archive.read("data/NOT_INCLUDED.txt").decode()
+        self.assertIn(f"Figure {self.result.charts[0]}: it is no longer stored.", left_out)
+        self.assertNotIn("Table", left_out)
+
     async def test_without_the_data_service_the_documents_say_what_is_left_out(self):
         markdown = await self.exporter(earthdata=None).methods("user-a", self.result.trace_id)
         self.assertIn(NO_DATA_SERVICE, markdown)
@@ -248,3 +305,34 @@ class InterpretationTests(ExportCase):
         provenance = await self.exporter().provenance("user-a", run_id)
         self.assertEqual(provenance["interpretation"], {"text": "NO2 looks higher in the north.", "written_by": "model"})
         self.assertIsNone(provenance["workflow"])
+
+
+class FormulaCellTests(ExportCase):
+    async def test_text_a_spreadsheet_would_run_as_a_formula_is_quoted_and_numbers_are_left_alone(self):
+        from tta_backend.services.payload_figures import csv_bytes
+
+        rows = [["site", "value", "note"], ["=HYPERLINK(\"x\")", -1.5, "+1 more"], ["@sum", "-2.5", "\tTab"],
+                ["-cmd", 3, "plain"]]
+        import csv
+
+        read = list(csv.reader(io.StringIO(csv_bytes(rows).decode())))
+        self.assertEqual(read, [
+            ["site", "value", "note"], ["'=HYPERLINK(\"x\")", "-1.5", "'+1 more"], ["'@sum", "-2.5", "'\tTab"],
+            ["'-cmd", "3", "plain"],
+        ])
+
+    async def test_a_derived_tables_rows_in_the_archive_are_quoted_the_same_way(self):
+        import pandas as pd
+
+        from tta_backend.services.result_export import _frame_rows
+
+        rows = _frame_rows(pd.DataFrame({"name": ["=1+1", "Trenton"], "value": [-3.0, 4.0]}))
+        from tta_backend.services.payload_figures import csv_bytes
+
+        self.assertEqual(csv_bytes(rows or []).decode().splitlines(), ["name,value", "'=1+1,-3.0", "Trenton,4.0"])
+
+    async def test_a_stored_tables_csv_is_quoted_the_same_way(self):
+        ref = self.tables.put_table("Sites", ["site", "value"], [{"site": "=cmd|' /C calc'!A0", "value": -1}])
+        await self.tables.claim(ref.id, "user-a", "conv-1")
+        chunks = [chunk async for chunk in self.tables.iter_csv_chunks(ref.id, "user-a")]
+        self.assertEqual(b"".join(chunks).decode().splitlines(), ["site,value", "'=cmd|' /C calc'!A0,-1"])

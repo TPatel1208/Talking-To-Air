@@ -39,7 +39,7 @@ from tta_backend.harness.results_store import ResultNotFound as SavedResultMissi
 from tta_backend.harness.run_context import EarthdataSession
 from tta_backend.harness.storage import Stores
 from tta_backend.harness.trace import Run, RunNotFound, TraceEntry
-from tta_backend.services.artifact_store import ArtifactStore
+from tta_backend.services.artifact_store import ArtifactStore, is_table_id
 from tta_backend.services.chart_service import ChartLink, ChartService
 from tta_backend.services.methods_export_service import _citation_text
 from tta_backend.services.payload_figures import chart_rows, csv_bytes, figure_png
@@ -504,8 +504,10 @@ class ResultExporter:
             payload = charts.get(figure)
             if payload is not None:
                 await self._chart_files(archive, figure, payload)
-            else:
+            elif is_table_id(figure):
                 await self._table_file(archive, figure, user_id)
+            else:
+                archive.left_out.append(f"Figure {figure}: it is no longer stored.")
         for handle, handle_record in record.records.items():
             if handle in record.result.handles:
                 await self._handle_file(archive, handle_record)
@@ -562,27 +564,38 @@ class ResultExporter:
 # A chart a harness run drew
 
 
+async def _chart_records(stores: Stores, user_id: str, link: ChartLink) -> tuple[dict[str, HandleRecord], list[str]]:
+    """The records behind every handle the chart renders, and those of its handles that are the user's."""
+    records, _ = await walk_handles(stores, user_id, link.handles)
+    return records, [h for h in link.handles if h in records]
+
+
 async def chart_provenance(
     stores: Stores, user_id: str, link: ChartLink, earthdata: EarthdataSession | None,
 ) -> dict[str, Any]:
-    """The provenance pane's view of a harness chart: its handle's lineage, the run and
-    mode that drew it, and the product behind it with the rule that chose it."""
-    records, _ = await walk_handles(stores, user_id, [link.handle] if link.handle else [])
-    roots = [link.handle] if link.handle and link.handle in records else []
+    """The provenance pane's view of a harness chart: the merged lineage of all its
+    handles, the run and mode that drew it, and the products behind them, each
+    with the rule that chose it. ``product`` is the first handle's, else the
+    first behind the chart."""
+    records, roots = await _chart_records(stores, user_id, link)
     merged, _, answered = await handle_lineage(stores, user_id, roots, earthdata)
     product = None
+    products: list[dict[str, Any]] = []
     try:
         run = await stores.traces.get_run(user_id, link.run_id)
         entries = await stores.traces.entries(user_id, link.run_id)
         choices = await product_choices(stores, user_id, run, records, entries)
-        # The product of the chart's own handle, else the first behind it.
+        behind = {r.descriptor.product for r in records.values() if r.descriptor.product}
+        shown = [c for c in choices if c.key in behind] or list(choices)
         own = records[link.handle].descriptor.product if link.handle in records else None
-        chosen = next((c for c in choices if c.key == own), None) or next(iter(choices), None)
+        chosen = next((c for c in shown if c.key == own), None) or next(iter(shown), None)
         product = None if chosen is None else chosen.to_json()
+        products = [c.to_json() for c in shown]
     except RunNotFound:
         pass
     view = {
-        **merged, "run_id": link.run_id, "mode": link.mode.view(), "product": product, "handle": link.handle,
+        **merged, "run_id": link.run_id, "mode": link.mode.view(), "product": product, "products": products,
+        "handle": link.handle, "handles": list(link.handles),
     }
     if not answered:
         view["note"] = NO_DATA_SERVICE
@@ -592,9 +605,8 @@ async def chart_provenance(
 async def chart_citations(
     stores: Stores, user_id: str, link: ChartLink, earthdata: EarthdataSession | None,
 ) -> list[dict[str, Any]]:
-    """The dataset citations behind a harness chart's handle."""
-    records, _ = await walk_handles(stores, user_id, [link.handle] if link.handle else [])
-    roots = [link.handle] if link.handle and link.handle in records else []
+    """The dataset citations behind all of a harness chart's handles."""
+    _, roots = await _chart_records(stores, user_id, link)
     _, citations, _ = await handle_lineage(stores, user_id, roots, earthdata)
     return citations
 

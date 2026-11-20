@@ -50,6 +50,21 @@ class Events(Protocol):
         ...
 
 
+# The stage of the one progress line each workflow run and exploration task ends with.
+FINISHED_STAGE = "finished"
+_FINISHED_WORDING = {
+    "done": "Done", "needs_input": "Needs input", "waiting": "Waiting", "incomplete": "Incomplete",
+    "failed": "Failed", "cancelled": "Cancelled",
+}
+
+
+def report_finished(events: Events, run_id: str, status: str) -> None:
+    """The progress line that closes run ``run_id``: stage ``finished`` and ``detail`` ``{status}``."""
+    events.progress(
+        _FINISHED_WORDING.get(status, status), stage=FINISHED_STAGE, detail={"status": status}, run_id=run_id,
+    )
+
+
 class Artifacts(Protocol):
     """Where charts, tables and a map's media are stored.
 
@@ -111,6 +126,14 @@ Reachable = Callable[[str], bool]
 
 def all_reachable(connector: str) -> bool:
     return True
+
+
+# The sources a connector names, as the user knows them.
+SOURCE_NAMES = {"earthdata": "NASA Earthdata", "epa_aqs": "EPA AQS"}
+
+
+def source_name(connector: str) -> str:
+    return SOURCE_NAMES.get(connector, connector)
 
 
 @dataclass(frozen=True)

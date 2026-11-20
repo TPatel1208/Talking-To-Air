@@ -73,6 +73,7 @@ from tta_backend.services.harness_chat import HarnessChat, build_harness_chat, t
 from tta_backend.services.harness_host import McpEarthdataSession
 from tta_backend.services.payload_figures import chart_rows, csv_bytes, figure_png
 from tta_backend.services.result_export import (
+    NO_DATA_SERVICE,
     ResultExporter,
     ResultNotFound,
     chart_citations,
@@ -958,15 +959,16 @@ def _earthdata_tools(request: Request) -> dict[str, Any]:
 @app.get("/chart/{chart_id}/export.csv")
 @limiter.limit("3/minute")
 async def export_chart_csv(chart_id: str, request: Request) -> Response:
+    payload = await _get_owned_chart(chart_id, request.state.current_user.id)
+    link = ChartLink.of(payload)
+    if link is not None:
+        # Written from the payload alone, so it needs no data service.
+        return await _harness_chart_csv(payload, link)
     # Resolved through the readiness gate (shared structured 503),
     # never app.state.earthdata_mcp_tools directly — a not-ready MCP must
     # fail here, before any 200 header is committed, not inside the
     # StreamingResponse generator.
     tools = _earthdata_tools(request)
-    payload = await _get_owned_chart(chart_id, request.state.current_user.id)
-    link = ChartLink.of(payload)
-    if link is not None:
-        return await _harness_chart_csv(payload, link)
     if not payload.get("export"):
         raise HTTPException(status_code=422, detail="This chart does not include full-resolution export metadata.")
 
@@ -1268,13 +1270,16 @@ async def chart_provenance_endpoint(chart_id: str, request: Request) -> dict[str
 @app.get("/chart/{chart_id}/citations")
 @limiter.limit("30/minute")
 async def chart_citations_endpoint(chart_id: str, request: Request) -> dict[str, Any]:
-    tools = _earthdata_tools(request)
     user_id = request.state.current_user.id
     payload = await _get_owned_chart(chart_id, user_id)
     link = ChartLink.of(payload)
     with user_id_context(user_id):
         if link is not None:
-            return {"citations": await chart_citations(_harness(request).stores, user_id, link, McpEarthdataSession(tools))}
+            # Without the data service a harness chart has no citations to give, and the answer says so.
+            earthdata = _data_service(request)
+            citations = await chart_citations(_harness(request).stores, user_id, link, earthdata)
+            return {"citations": citations} if earthdata is not None else {"citations": citations, "note": NO_DATA_SERVICE}
+        tools = _earthdata_tools(request)
         return {"citations": await get_citations(_chart_source_handles(payload), tools)}
 
 
@@ -1333,9 +1338,6 @@ async def chart_methods_endpoint(chart_id: str, request: Request) -> Response:
 @app.get("/chart/{chart_id}/export.nc")
 @limiter.limit("3/minute")
 async def export_chart_netcdf(chart_id: str, request: Request) -> StreamingResponse:
-    # Same readiness gate (shared structured 503) as every other
-    # MCP-backed endpoint, instead of a bespoke bare-detail 503.
-    tools = _earthdata_tools(request)
     payload = await _get_owned_chart(chart_id, request.state.current_user.id)
     source_handles = _chart_source_handles(payload)
     if not source_handles:
@@ -1345,6 +1347,9 @@ async def export_chart_netcdf(chart_id: str, request: Request) -> StreamingRespo
         raise _not_exported(
             link, "This chart shows data the backend derived, which the data service cannot convert to NetCDF.",
         )
+    # Same readiness gate (shared structured 503) as every other
+    # MCP-backed endpoint, instead of a bespoke bare-detail 503.
+    tools = _earthdata_tools(request)
 
     try:
         with user_id_context(request.state.current_user.id):

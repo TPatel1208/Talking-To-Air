@@ -32,6 +32,11 @@ class HandleRegistry(Protocol):
         """Mark a file-backed derived payload as evicted; the record stays."""
         ...
 
+    async def delete_conversation(self, user_id: str, conversation_id: str) -> list[HandleRecord]:
+        """Delete the user's handles recorded in the conversation; the records deleted.
+        Their payload files are the caller's to delete."""
+        ...
+
 
 def _check_mint(record: HandleRecord) -> None:
     if record.origin != "derived":
@@ -86,6 +91,13 @@ class InMemoryHandleRegistry:
         record = _evict(await self.get(user_id, handle_id), at)
         self._records[(user_id, handle_id)] = record
         return record.model_copy(deep=True)
+
+    async def delete_conversation(self, user_id: str, conversation_id: str) -> list[HandleRecord]:
+        doomed = [
+            key for key, record in self._records.items()
+            if key[0] == user_id and record.conversation_id == conversation_id
+        ]
+        return [self._records.pop(key) for key in doomed]
 
 
 async def ensure_tables(connect: Connect) -> None:
@@ -199,3 +211,12 @@ class PostgresHandleRegistry:
                 (_dump(record), user_id, handle_id),
             )
         return record
+
+    async def delete_conversation(self, user_id: str, conversation_id: str) -> list[HandleRecord]:
+        async with self._connect() as conn:
+            cur = await conn.execute(
+                "DELETE FROM harness_handles WHERE user_id = %s AND conversation_id = %s RETURNING record",
+                (user_id, conversation_id),
+            )
+            rows = await cur.fetchall()
+        return [_load(row[0]) for row in rows]

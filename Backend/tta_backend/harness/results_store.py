@@ -37,6 +37,10 @@ class ResultStore(Protocol):
         """The user's results for ``run_ids`` by run id; runs with none are absent."""
         ...
 
+    async def delete_runs(self, user_id: str, run_ids: Sequence[str]) -> None:
+        """Delete the user's results for ``run_ids``; a run with none is skipped."""
+        ...
+
 
 def _dump(user_id: str, result: Result) -> dict[str, Any]:
     if not user_id:
@@ -73,6 +77,10 @@ class InMemoryResultStore:
             if stored is not None:
                 found[run_id] = _load(json.loads(stored))
         return found
+
+    async def delete_runs(self, user_id: str, run_ids: Sequence[str]) -> None:
+        for run_id in run_ids:
+            self._results.pop((user_id, run_id), None)
 
 
 async def ensure_tables(connect: Connect) -> None:
@@ -129,3 +137,12 @@ class PostgresResultStore:
             )
             rows = await cur.fetchall()
         return {str(row[0]): _load(row[1]) for row in rows}
+
+    async def delete_runs(self, user_id: str, run_ids: Sequence[str]) -> None:
+        doomed = list(dict.fromkeys(run_ids))
+        if not doomed:
+            return
+        async with self._connect() as conn:
+            await conn.execute(
+                "DELETE FROM harness_results WHERE user_id = %s AND run_id = ANY(%s)", (user_id, doomed),
+            )

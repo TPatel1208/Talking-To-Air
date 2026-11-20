@@ -147,6 +147,39 @@ class ResultExportEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(f"/result/{self.run_id}/export.zip", netcdf.json()["detail"])
         self.assertEqual((await self.get(f"/chart/{chart_id}/export.csv", self.other)).status_code, 404)
 
+    async def test_while_the_data_service_is_down_a_harness_charts_csv_and_citations_are_still_served(self):
+        self.api.app.state.earthdata_mcp_manager = SimpleNamespace(state="connecting", tools={})
+        chart_id = await self.seed_chart(
+            "timeseries", SERIES, times=["2024-06-01"], values=[1.0], units="ppb",
+            series=[{"label": "NO2", "units": "ppb", "times": ["2024-06-01"], "values": [1.0], "handle": SERIES}],
+        )
+
+        csv = await self.get(f"/chart/{chart_id}/export.csv", self.owner)
+        self.assertEqual(csv.status_code, 200, csv.text)
+        self.assertEqual(csv.text.splitlines()[0], "series,time,value,units,handle")
+        citations = await self.get(f"/chart/{chart_id}/citations", self.owner)
+        self.assertEqual(citations.status_code, 200, citations.text)
+        self.assertEqual(citations.json(), {"citations": [], "note": NO_DATA_SERVICE})
+        netcdf = await self.get(f"/chart/{chart_id}/export.nc", self.owner)
+        self.assertEqual(netcdf.status_code, 409)
+        # A chart that needs the data service still says it is unavailable.
+        plain = await self.charts.save_chart("thread-1", {
+            "type": "heatmap", "title": "Not a harness chart", "export": {"type": "heatmap"},
+            "metadata": {"source_handles": ["obs_1"]},
+        }, "user-1")
+        self.assertEqual((await self.get(f"/chart/{plain['chart_id']}/export.csv", self.owner)).status_code, 503)
+        self.assertEqual((await self.get(f"/chart/{plain['chart_id']}/citations", self.owner)).status_code, 503)
+
+    async def test_a_deleted_conversations_results_are_not_found(self):
+        from tta_backend.harness.deletion import delete_conversation
+
+        self.assertEqual((await self.get(f"/result/{self.run_id}/methods.md", self.owner)).status_code, 200)
+        await delete_conversation(self.stores, None, "user-1", "thread-1")
+
+        for path in ("methods.md", "provenance.json", "export.zip"):
+            with self.subTest(path):
+                self.assertEqual((await self.get(f"/result/{self.run_id}/{path}", self.owner)).status_code, 404)
+
     async def test_a_harness_map_draws_a_png_and_refuses_csv_with_a_reason(self):
         chart_id = await self.seed_chart(
             "heatmap", "obs_1", lats=[40.0, 41.0], lons=[-75.0, -74.0], values=[[1.0, None], [2.0, 3.0]],

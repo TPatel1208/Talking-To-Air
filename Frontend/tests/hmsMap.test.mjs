@@ -1,6 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { smokeMapStyle, smokeMapBounds, fitSmokeMap, asSmokeMap } from '../src/utils/hmsMap.js'
+import {
+  smokeMapStyle, smokeMapBounds, fitSmokeMap, asSmokeMap, isSmokePolygonMap, overlayPointsGeoJSON, polygonMapLayers,
+} from '../src/utils/hmsMap.js'
 
 const geojson = { type: 'FeatureCollection', features: [{ type: 'Feature', geometry: {
   type: 'MultiPolygon', coordinates: [[[[-80, 30], [-70, 30], [-70, 40], [-80, 30]]]],
@@ -84,4 +86,45 @@ test('a harness polygon_map becomes the smoke map shape the panel reads', () => 
   assert.equal(asSmokeMap(chart), smoke)
   const other = { type: 'heatmap' }
   assert.equal(asSmokeMap(other), other)
+})
+
+const OVERLAY = { points: { handle: 'points_1', points: [
+  { id: 'site-1', name: 'Trenton', lat: 40.2, lon: -74.7, value: 12.5 },
+  { id: 'site-2', name: null, lat: Number.NaN, lon: -74.0 },
+] } }
+
+test('a smoke polygon map keeps its point overlay when it becomes the smoke shape', () => {
+  const chart = {
+    type: 'polygon_map', bounds: [-80, 30, -70, 40], overlays: OVERLAY,
+    polygons: [{ handle: 'polygons_a', geojson: { type: 'FeatureCollection', features: [
+      { type: 'Feature', geometry: null, properties: { density: 'medium' } },
+    ] } }],
+  }
+  const smoke = asSmokeMap(chart)
+  assert.equal(smoke.type, 'smoke_map')
+  assert.deepEqual(smoke.overlays, OVERLAY)
+  assert.deepEqual(overlayPointsGeoJSON(smoke).features.map(f => f.geometry.coordinates), [[-74.7, 40.2]])
+})
+
+test('a polygon map that is not smoke keeps its type and draws its polygons and points', () => {
+  const feature = { type: 'Feature', geometry: { type: 'Polygon', coordinates: [[[-75, 39], [-74, 39], [-74, 40], [-75, 39]]] },
+    properties: { name: 'A district' } }
+  const chart = {
+    type: 'polygon_map', bounds: null, overlays: OVERLAY,
+    polygons: [{ handle: 'polygons_b', geojson: { type: 'FeatureCollection', features: [feature] } }],
+  }
+  assert.equal(isSmokePolygonMap(chart), false)
+  assert.equal(asSmokeMap(chart), chart)
+  const layers = polygonMapLayers(chart)
+  assert.deepEqual(layers.polygons.features, [feature])
+  assert.equal(layers.points.features.length, 1)
+  assert.deepEqual(layers.points.features[0].properties, { id: 'site-1', name: 'Trenton', value: 12.5 })
+  assert.deepEqual(layers.bounds, [[-75, 39], [-74, 40]])
+})
+
+test('an empty polygon map is smoke only when its sources are the smoke extent', () => {
+  const empty = sources => ({ type: 'polygon_map', polygons: [], feature_count: 0, provenance: { sources } })
+  assert.equal(asSmokeMap(empty([{ handle: 'polygons_a', kind: 'polygons', quantity: 'smoke_extent' }])).type, 'smoke_map')
+  assert.equal(asSmokeMap(empty([{ handle: 'polygons_c', kind: 'polygons' }])).type, 'polygon_map')
+  assert.equal(asSmokeMap(empty([])).type, 'polygon_map')
 })

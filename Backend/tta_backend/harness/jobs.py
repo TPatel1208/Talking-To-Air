@@ -206,6 +206,22 @@ def _still_open(entry: TraceEntry) -> bool:
     return result is None or (isinstance(result, dict) and "still_running" in result)
 
 
+def _job_ids(job: dict[str, Any]) -> list[str]:
+    listed = job.get("jobs")
+    ids: list[str] = []
+    for item in listed if isinstance(listed, list) else ():
+        job_id = item.get("job") if isinstance(item, dict) else None
+        if isinstance(job_id, str) and job_id:
+            ids.append(job_id)
+    return ids
+
+
+def begun_jobs(entries: Iterable[TraceEntry]) -> list[str]:
+    """Every provider job id the entries' ``begin`` steps submitted or reused, settled or not, in first-seen order."""
+    ids = [job_id for entry in entries if (job := _begun_job(entry)) is not None for job_id in _job_ids(job)]
+    return list(dict.fromkeys(ids))
+
+
 def waiting_jobs(entries: Iterable[TraceEntry]) -> list[str]:
     """The provider job ids a run's entries are still waiting on, in first-seen order.
 
@@ -223,13 +239,7 @@ def waiting_jobs(entries: Iterable[TraceEntry]) -> list[str]:
             key = _key(entry.params[JOB_PARAM])
             if key in open_jobs and not _still_open(entry):
                 del open_jobs[key]
-    ids: list[str] = []
-    for job in open_jobs.values():
-        listed = job.get("jobs")
-        for item in listed if isinstance(listed, list) else ():
-            job_id = item.get("job") if isinstance(item, dict) else None
-            if isinstance(job_id, str) and job_id:
-                ids.append(job_id)
+    ids = [job_id for job in open_jobs.values() for job_id in _job_ids(job)]
     return list(dict.fromkeys(ids))
 
 

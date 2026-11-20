@@ -502,6 +502,20 @@ class ProgressTests(ExploreCase):
         self.assertEqual(queued["detail"], {"objective": made.objective, "bundle": made.bundle, "queued": True})
         self.assertEqual(first["detail"], {"objective": made.objective, "bundle": made.bundle})
         self.assertEqual({e["run_id"] for e in events}, {result.trace_id})
+        # The task's last line closes its row with the status it ended in.
+        self.assertEqual(events[-1], {
+            "message": "Done", "stage": "finished", "detail": {"status": "done"}, "run_id": result.trace_id,
+        })
+
+    async def test_a_task_that_fails_still_ends_with_its_finished_line(self):
+        [result] = await self.go(task(), script=[])
+
+        events = self.context.events.progress_events  # type: ignore[attr-defined]
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(events[-1], {
+            "message": "Failed", "stage": "finished", "detail": {"status": "failed"}, "run_id": result.trace_id,
+        })
+        self.assertEqual([e["stage"] for e in events].count("finished"), 1)
 
     async def test_every_task_is_shown_queued_with_its_run_id_before_a_slot_frees(self):
         objectives = ["Hold first.", "Hold second."]

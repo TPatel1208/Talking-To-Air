@@ -10,7 +10,9 @@ For one task:
    without calling the model, and so does a question, except in a
    ``find-data`` task: it needs no area to search, so the place goes to the
    model as text with a note that it could not be resolved.
-4. A specialist is built for the bundle and run. A question from a tool ends
+4. A specialist is built for the bundle, less the capabilities that need a
+   connector whose service is down (the result discloses each such source),
+   and run. A question from a tool ends
    the task ``needs_input``; a retrieval still running ends it ``waiting``;
    a spent budget ends it ``incomplete``; models that all fail end it ``failed``.
 5. The answer is checked, re-prompted once and salvaged as ``answer`` says;
@@ -38,12 +40,13 @@ from langchain_core.messages import HumanMessage
 from langgraph.errors import GraphBubbleUp
 
 from tta_backend.harness.capabilities import failures
-from tta_backend.harness.capabilities.registry import CapabilityRegistry
+from tta_backend.harness.capabilities.definition import Capability
+from tta_backend.harness.capabilities.registry import CapabilityRegistry, Group
 from tta_backend.harness.handles.errors import HandleError
 from tta_backend.harness.knowledge import NoteCatalogue
 from tta_backend.harness.models import DEFAULT_BACKOFF, Backoff, ModelChoice, Usage
 from tta_backend.harness.results import Finding, Mode, Result, ResultStatus
-from tta_backend.harness.run_context import RunContext, RunEnv
+from tta_backend.harness.run_context import RunContext, RunEnv, report_finished, source_name
 from tta_backend.harness.specialists.answer import Answer, AnswerGuard, accepted, salvage, to_finding
 from tta_backend.harness.specialists.builder import build_specialist
 from tta_backend.harness.specialists.bundles import get_bundle
@@ -72,6 +75,7 @@ EXPLORE_STAGE = "explore"
 # Bundles whose tasks carry on with a place that could not be resolved.
 PLACES_AS_TEXT = frozenset({"find-data"})
 UNRESOLVED_DISCLOSURE = "'{place}' could not be resolved to an area, so it was not used as one."
+UNREACHABLE_DISCLOSURE = "{source} is unavailable right now, so this exploration ran without it."
 # The name the model failure wordings are filled with.
 TASK_NAME = "this exploration"
 # The entry's model when the task never had one.
@@ -244,16 +248,31 @@ class _Task:
                 self.state.add_input(record)
         return None
 
+    def _offered(self) -> tuple[tuple[Capability[Any], ...], tuple[Group, ...]]:
+        """The bundle's capabilities and their groups, without those that need a
+        connector whose service is down; each such source is disclosed once."""
+        everything = get_bundle(self.task.bundle).capabilities(self.registry)
+        reachable = self.env.context.reachable
+        down = sorted({
+            c.connector for c in everything
+            if c.connector is not None and c.connector_required and not reachable(c.connector)
+        })
+        for connector in down:
+            self.state.disclose(UNREACHABLE_DISCLOSURE.format(source=source_name(connector)))
+        offered = tuple(c for c in everything if not (c.connector_required and c.connector in down))
+        groups = tuple(self.registry.group(name) for name in sorted({c.group for c in offered}))
+        return offered, groups
+
     async def _explore(self, caller: Caller, choice: ModelChoice) -> _Outcome:
-        bundle = get_bundle(self.task.bundle)
         inputs = self.state.inputs()
         start_notes = notes_in_play(self.notes, inputs)
         self.state.shown_notes.update(note.id for note in start_notes)
         guard = AnswerGuard(self.state)
+        offered, groups = self._offered()
         specialist = build_specialist(
             choice,
-            capability_tools(bundle.capabilities(self.registry), caller),
-            system_prompt(bundle.groups(self.registry), start_notes),
+            capability_tools(offered, caller),
+            system_prompt(groups, start_notes),
             guard,
             self.limits,
             backoff=self.backoff,
@@ -394,17 +413,19 @@ async def _guarded(
     backoff: Backoff,
     run_id: str,
 ) -> Result:
-    """One task's result whatever happens, so a task that fails never fails another."""
+    """One task's result whatever happens, so a task that fails never fails
+    another; the task's ``finished`` progress line goes out as it ends."""
     try:
-        return await _one(context, build_env, task, registry, notes, limits, backoff, run_id)
+        result = await _one(context, build_env, task, registry, notes, limits, backoff, run_id)
     except asyncio.CancelledError:
         raise
     except Exception as exc:
         # Reached only when the trace store itself failed; the run may be left unfinished.
         logger.error("exploration run %s could not be recorded: %s", run_id, type(exc).__name__)
-        failed = _result(run_id, _Outcome.failed(FailureCategory.INTERNAL_ERROR, INTERNAL_REASON), TaskState())
-        await _save(context, failed)
-        return failed
+        result = _result(run_id, _Outcome.failed(FailureCategory.INTERNAL_ERROR, INTERNAL_REASON), TaskState())
+        await _save(context, result)
+    report_finished(context.events, run_id, result.status)
+    return result
 
 
 async def explore(

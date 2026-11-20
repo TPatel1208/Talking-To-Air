@@ -20,6 +20,7 @@ from tta_backend.harness.models import NO_BACKOFF, ModelChoice, NamedModel
 from tta_backend.harness.results import Finding, Gap, Mode, Result
 from tta_backend.harness.run_context import RunContext
 from tta_backend.harness.specialists import ExploreLimits
+from tta_backend.harness.specialists.explore import UNREACHABLE_DISCLOSURE
 from tta_backend.harness.supervisor import (
     MAX_TASKS,
     TOOL_NAMES,
@@ -675,6 +676,14 @@ class SourceDownTests(SupervisorCase):
     def down(self, *connectors: str) -> RunContext:
         return dataclasses.replace(self.f.context, reachable=lambda connector: connector not in connectors)
 
+    def needing(self, connector: str) -> set[str]:
+        """The tool names of the capabilities that cannot run without ``connector``."""
+        registry = self.f.registry
+        return {
+            c.name.replace(".", "__") for group in registry.groups() for c in registry.in_group(group.name)
+            if c.connector == connector and c.connector_required
+        }
+
     async def no_runs(self) -> None:
         self.assertEqual(await self.f.stores.traces.list_runs("user-a", "conv-1"), [])
 
@@ -695,19 +704,40 @@ class SourceDownTests(SupervisorCase):
         self.assertEqual(turn.text.count(EARTHDATA_DOWN), 1)
         self.assertEqual(turn.text, f"The map could not be made.\n\nNot finished:\n- {EARTHDATA_DOWN}")
 
-    async def test_explore_tasks_whose_bundle_needs_a_down_source_are_refused_before_any_run(self):
+    async def test_explore_tasks_run_without_the_down_sources_capabilities_and_disclose_it(self):
+        disclosure = UNREACHABLE_DISCLOSURE.format(source="NASA Earthdata")
         for bundle in ("analyse", "find-data"):
             with self.subTest(bundle=bundle):
+                self.explorer.script, self.explorer.position = [final("Only the ground monitors could be searched.")], 0
+                self.explorer.tools_offered.clear()
                 task = {"objective": "Get NO2 over NJ.", "bundle": bundle, "places": ["NJ"]}
-                model = Model(script=[tool_call("explore", {"tasks": [task]}), answer("Nothing ran.")])
+                model = Model(script=[tool_call("explore", {"tasks": [task]}), answer("Here is what could be found.")])
                 turn = await self.turn(self.supervisor(model), context=self.down("earthdata"))
 
-                self.assertEqual(last_tool(model), {"status": "refused", "reason": EARTHDATA_DOWN})
-                self.assertEqual((turn.results, turn.unavailable), ((), ("earthdata",)))
-                self.assertEqual(turn.text.count(EARTHDATA_DOWN), 1)
-        self.assertEqual(self.explorer.calls, 0)
-        self.assertEqual(self.f.places.asked, [])
-        await self.no_runs()
+                [result] = turn.results
+                self.assertEqual(result.status, "done")
+                self.assertEqual(result.disclosures.count(disclosure), 1)
+                offered = {name for names in self.explorer.tools_offered for name in names}
+                self.assertTrue(offered)
+                self.assertFalse(offered & self.needing("earthdata"), offered)
+                self.assertIn("sources__monitors__find", offered)
+                # Nothing was refused, so the answer names no unavailable source as unfinished.
+                self.assertEqual(turn.unavailable, ())
+                self.assertNotIn(EARTHDATA_DOWN, turn.text)
+                self.assertNotIn("Not finished:", turn.text)
+                self.assertIn(disclosure, turn.text)
+
+    async def test_with_every_source_up_an_explore_task_is_offered_the_whole_bundle_and_discloses_nothing(self):
+        self.explorer.script = [final("Found it.")]
+        task = {"objective": "Get NO2 over NJ.", "bundle": "find-data", "places": ["NJ"]}
+        model = Model(script=[tool_call("explore", {"tasks": [task]}), answer("Found.")])
+        turn = await self.turn(self.supervisor(model))
+
+        [result] = turn.results
+        self.assertFalse(any("unavailable" in d for d in result.disclosures))
+        offered = {name for names in self.explorer.tools_offered for name in names}
+        self.assertIn("sources__satellite__search", offered)
+        self.assertTrue(offered & self.needing("earthdata"))
 
     async def test_a_task_that_works_on_existing_handles_is_not_held_by_a_down_source(self):
         self.explorer.script = [final("Nothing to work on.")]

@@ -121,3 +121,73 @@ test('capability and workflow stages have short labels; unknown ones fall back t
   const state = fold([{ message: 'Doing a new thing...', stage: 'something.new', run_id: 'run-x' }])
   assert.equal(runRowView(state.runs[0]).title, 'Doing a new thing...')
 })
+
+test('the finished frame for a run closes only that row and keeps the status it ended in', () => {
+  const state = fold([
+    WORKFLOW_FIRST,
+    EXPLORE_FIRST,
+    { message: 'Failed', stage: 'finished', run_id: 'run-ex-1', detail: { status: 'failed' } },
+  ])
+
+  const [workflow, explore] = state.runs
+  assert.equal(workflow.done, false)
+  assert.equal(explore.done, true)
+  assert.equal(explore.status, 'failed')
+  const done = fold([{ message: 'Done', stage: 'finished', run_id: 'run-wf-1', detail: { status: 'done' } }], state)
+  assert.equal(done.runs[0].done, true)
+  assert.equal(done.runs[0].status, 'done')
+})
+
+test('an error points at the run the results say failed', () => {
+  const state = fold([
+    WORKFLOW_FIRST,
+    EXPLORE_FIRST,
+    { message: 'Searching', stage: 'sources.satellite.search', run_id: 'run-ex-1' },
+  ])
+  const failed = applyWorkflowEvent(state, 'error', { results: [{ run_id: 'run-wf-1', status: 'failed' }] })
+
+  assert.equal(failed.failedLane, 'No2 regional trend')
+  assert.equal(failed.failedStage, 'workflow.no2_regional_trend')
+})
+
+test('an error points at the run whose own closing frame said it failed', () => {
+  const state = fold([
+    WORKFLOW_FIRST,
+    { message: 'Retrieving satellite data', stage: 'sources.satellite.get_data', run_id: 'run-wf-1', detail: { step: 'fetch' } },
+    EXPLORE_FIRST,
+    { message: 'Failed', stage: 'finished', run_id: 'run-wf-1', detail: { status: 'failed' } },
+  ])
+  const failed = applyWorkflowEvent(state, 'error', {})
+
+  assert.equal(failed.failedLane, 'No2 regional trend')
+  assert.equal(failed.failedStage, 'sources.satellite.get_data')
+})
+
+test('without a failed run named, an error points at the most recently started run still going', () => {
+  const state = fold([
+    { ...EXPLORE_FIRST, run_id: 'run-ex-queued', detail: { objective: 'Later task', bundle: 'analyse', queued: true } },
+    WORKFLOW_FIRST,
+    EXPLORE_FIRST,
+    { message: 'Searching', stage: 'sources.satellite.search', run_id: 'run-ex-1' },
+  ])
+  const failed = applyWorkflowEvent(state, 'error', {})
+
+  assert.equal(failed.failedLane, 'Exploring')
+  assert.equal(failed.failedStage, 'sources.satellite.search')
+})
+
+test('a queued exploration task waits under its objective until its start frame', () => {
+  const queued = fold([
+    { message: 'Waiting to explore: Map smoke', stage: 'explore', run_id: 'run-q',
+      detail: { objective: 'Map smoke', bundle: 'analyse', queued: true } },
+  ])
+  assert.equal(queued.runs[0].queued, true)
+  assert.equal(runRowView(queued.runs[0]).title, 'Waiting to explore: Map smoke')
+
+  const started = fold([{ message: 'Exploring', stage: 'explore', run_id: 'run-q',
+    detail: { objective: 'Map smoke', bundle: 'analyse' } }], queued)
+  assert.equal(started.runs[0].queued, false)
+  const view = runRowView(started.runs[0])
+  assert.equal(view.title, 'Exploring')
+  assert.equal(view.activity, 'Map smoke')
+})

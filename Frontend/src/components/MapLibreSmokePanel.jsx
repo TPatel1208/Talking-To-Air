@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import  * as maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
-import { fitSmokeMap, smokeMapBounds, smokeMapStyle } from '../utils/hmsMap.js'
+import { fitSmokeMap, overlayPointsGeoJSON, smokeMapBounds, smokeMapStyle } from '../utils/hmsMap.js'
 import { SMOKE_COLORS as COLORS, SMOKE_LEGEND, smokeMapPng } from '../utils/hmsMapExport.js'
 import { API_BASE } from '../config.js'
 
@@ -50,6 +50,12 @@ export default function MapLibreSmokePanel({ payload }) {
               'light', COLORS.light, 'medium', COLORS.medium, 'heavy', COLORS.heavy, COLORS.unknown] } })
           map.addLayer({ id: 'smoke-line', type: 'line', source: 'smoke',
             paint: { 'line-color': '#594c46', 'line-width': 0.6 } })
+          const points = overlayPointsGeoJSON(payload)
+          if (points.features.length) {
+            map.addSource('overlay-points', { type: 'geojson', data: points })
+            map.addLayer({ id: 'overlay-points', type: 'circle', source: 'overlay-points',
+              paint: { 'circle-radius': 4, 'circle-color': '#111827', 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 1 } })
+          }
           loaded = true
           map.resize()
           fitSmokeMap(map, bounds, container.current)

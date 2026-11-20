@@ -65,6 +65,7 @@ from tta_backend.domain.earthdata.retrieval import (
     request_variables,
     search_hits,
     MAX_UNSIZED_GRANULES,
+    SizeDecision,
     size_gate,
     span_time_range,
 )
@@ -84,6 +85,7 @@ from tta_backend.harness.capabilities.result import CapabilityResult, JobRef, Qu
 from tta_backend.harness.capabilities.shapes import series_frame
 from tta_backend.harness.capabilities.sources.areas import area_facts
 from tta_backend.harness.handles.model import Descriptor, HandleRecord, Period
+from tta_backend.harness.run_context import Limits
 from tta_backend.harness.trace import FailureCategory, StepFailure
 
 GROUP = Group(
@@ -388,8 +390,13 @@ def _contract(call: Call[Any], what: str) -> StepFailure:
 
 
 async def _dataset(call: Call[Any], key: str, cfg: CollectionConfig) -> str:
-    """The dataset handle for exactly the chosen product's collection; never another collection."""
-    found = await call.earthdata.call("search_datasets", {"query": cfg.collection_id, "filters": None})
+    """The dataset handle for exactly the chosen product's collection; never another collection.
+
+    The search is filtered to the collection's concept id, and the reply is
+    still checked for exactly that collection."""
+    found = await call.earthdata.call(
+        "search_datasets", {"query": cfg.collection_id, "filters": {"concept_id": cfg.collection_id}},
+    )
     handle = dataset_handle_from_search(found, cfg.collection_id)
     if handle is None:
         raise StepFailure(
@@ -431,17 +438,52 @@ async def _nearest_with_data(
     return found
 
 
-async def _estimate(call: Call[Any], dataset: str, aoi: str, time_ranges: Sequence[str]) -> int | None:
-    total = 0
-    for time_range in time_ranges:
+@dataclass(frozen=True)
+class _Size:
+    """A retrieval plan's estimate: the bytes of the ranges the provider sized,
+    and the granules of those it could not."""
+
+    sized_bytes: int
+    sized_ranges: int
+    unsized_granules: int
+    unsized_ranges: int
+
+    @property
+    def estimated(self) -> int | None:
+        """The sized part's bytes; None when no range was sized."""
+        return self.sized_bytes if self.sized_ranges else None
+
+
+async def _estimate(call: Call[Any], dataset: str, aoi: str, plan: Sequence[tuple[str, int]]) -> _Size:
+    """The size of each ``(time_range, granules)`` in ``plan``, summed into its sized and unsized parts."""
+    sized = sized_ranges = unsized = unsized_ranges = 0
+    for time_range, granules in plan:
         estimate = await call.earthdata.call(
             "estimate_retrieval_size", {"dataset_handle": dataset, "aoi_handle": aoi, "time_range": time_range}
         )
         size = estimated_bytes(estimate)
         if size is None:
-            return None
-        total += size
-    return total
+            unsized += granules
+            unsized_ranges += 1
+        else:
+            sized += size
+            sized_ranges += 1
+    return _Size(sized_bytes=sized, sized_ranges=sized_ranges, unsized_granules=unsized, unsized_ranges=unsized_ranges)
+
+
+def _gate(size: _Size, limits: Limits, confirmed: bool) -> SizeDecision:
+    """The size gate on the sized part, then on the unsized part: the hard cap
+    applies to the sized bytes whatever else is unsized, and the unsized-granule
+    allowance only to the unsized part's granules."""
+    decision = size_gate(
+        size.sized_bytes, soft=limits.retrieval_soft_bytes, hard=limits.retrieval_hard_bytes, confirmed=confirmed,
+    )
+    if decision != "proceed" or not size.unsized_ranges:
+        return decision
+    return size_gate(
+        None, soft=limits.retrieval_soft_bytes, hard=limits.retrieval_hard_bytes, confirmed=confirmed,
+        granules=size.unsized_granules, max_unsized_granules=MAX_UNSIZED_GRANULES,
+    )
 
 
 def _megabytes(size: int) -> str:
@@ -477,14 +519,13 @@ async def _begin(call: Call[GetDataParams]) -> JobRef | CapabilityResult:
             if p.date_role == "subject":
                 nearest = await _nearest_with_data(call, dataset, aoi, dates, cfg.cadence)
             return _no_data("gap", facts, product=key, nearest_dates=nearest, disclosures=disclosed)
-        plan: list[tuple[str, str | None]] = [(span_time_range(dates.start, dates.end), None)]
+        plan: list[tuple[str, str | None, int]] = [(span_time_range(dates.start, dates.end), None, granules)]
     else:
-        kept: list[date] = []
+        kept: list[tuple[date, int]] = []
         for day in dates.listed:
             count = await _granules(call, dataset, aoi, day_time_range(day))
             if count:
-                kept.append(day)
-                granules += count
+                kept.append((day, count))
             else:
                 dropped.append(day.isoformat())
         if not kept:
@@ -495,27 +536,33 @@ async def _begin(call: Call[GetDataParams]) -> JobRef | CapabilityResult:
             return _no_data(
                 "gap", facts, product=key, nearest_dates=nearest, dropped=listed, disclosures=disclosed,
             )
-        plan = [(day_time_range(day), day.isoformat()) for day in kept]
+        plan = [(day_time_range(day), day.isoformat(), count) for day, count in kept]
 
     science, variables = request_variables(cfg)
-    estimated = await _estimate(call, dataset, aoi, [time_range for time_range, _ in plan])
+    size = await _estimate(call, dataset, aoi, [(time_range, count) for time_range, _, count in plan])
+    estimated = size.estimated
     limits = call.limits
-    decision = size_gate(
-        estimated, soft=limits.retrieval_soft_bytes, hard=limits.retrieval_hard_bytes, confirmed=p.confirmed,
-        granules=granules, max_unsized_granules=MAX_UNSIZED_GRANULES,
-    )
+    decision = _gate(size, limits, p.confirmed)
+    # Said of the sized part alone when another part has no size.
+    at_least = "at least " if size.unsized_ranges else ""
     if decision == "refuse":
-        assert estimated is not None
         raise StepFailure(
             FailureCategory.REQUEST_TOO_LARGE,
-            f"The retrieval of {key} over {area_name} for {dates.text()} is about {_megabytes(estimated)}, "
-            f"above the {_megabytes(limits.retrieval_hard_bytes)} limit; narrow the area or the dates.",
+            f"The retrieval of {key} over {area_name} for {dates.text()} is {at_least}about "
+            f"{_megabytes(size.sized_bytes)}, above the {_megabytes(limits.retrieval_hard_bytes)} limit; "
+            "narrow the area or the dates.",
         )
     if decision == "confirm":
-        size = "of unknown size" if estimated is None else f"about {_megabytes(estimated)}"
+        if estimated is None:
+            described = "of unknown size"
+        elif size.unsized_ranges:
+            described = f"about {_megabytes(size.sized_bytes)} plus a part of unknown size"
+        else:
+            described = f"about {_megabytes(size.sized_bytes)}"
+        over_soft = estimated is not None and size.sized_bytes > limits.retrieval_soft_bytes
         prompt = (
-            f"The retrieval of {key} over {area_name} for {dates.text()} is {size}"
-            + ("" if estimated is None else f", above the {_megabytes(limits.retrieval_soft_bytes)} soft limit")
+            f"The retrieval of {key} over {area_name} for {dates.text()} is {described}"
+            + (f", above the {_megabytes(limits.retrieval_soft_bytes)} soft limit" if over_soft else "")
             + ". Confirm to go ahead, or narrow the area or the dates."
         )
         return CapabilityResult(
@@ -527,7 +574,7 @@ async def _begin(call: Call[GetDataParams]) -> JobRef | CapabilityResult:
         )
 
     jobs: list[JsonValue] = []
-    for time_range, when in plan:
+    for time_range, when, _ in plan:
         request: dict[str, Any] = {
             "dataset_handle": dataset, "aoi_handle": aoi, "time_range": time_range,
             "variables": variables, "output_format": None,
@@ -550,8 +597,8 @@ async def _begin(call: Call[GetDataParams]) -> JobRef | CapabilityResult:
         "dropped": list(dropped),
         "skipped": list(choice["skipped"]),
         "estimated_bytes": estimated,
-        # Set when the provider could not size the retrieval and it went ahead unasked.
-        "unsized_granules": granules if estimated is None and not p.confirmed else None,
+        # Set when the provider could not size part of the retrieval and that part went ahead unasked.
+        "unsized_granules": size.unsized_granules if size.unsized_ranges and not p.confirmed else None,
     }
 
 

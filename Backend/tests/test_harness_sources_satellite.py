@@ -38,12 +38,21 @@ TEMPO_COLLECTION = load_registry()["TEMPO_NO2"].collection_id
 FAR = box_region("Lisbon", -9.3, 38.6, -9.0, 38.8, region_type="polygon")
 
 
+def _concept_id(hit: Any) -> Any:
+    if not isinstance(hit, dict):
+        return None
+    return hit.get("concept_id") or (hit.get("summary") or {}).get("concept_id")
+
+
 class FakeService:
     """A scripted earthdata service: coverage per day, sizes, jobs and their statuses."""
 
     def __init__(self) -> None:
         self.days_with_data: set[str] | None = None  # None: every day has data
         self.estimated_bytes: int | None = 1000
+        # Per day a size request starts on, overriding estimated_bytes; None is a day the provider cannot size.
+        self.sizes_by_day: dict[str, int | None] = {}
+        self.granules_per_day = 1
         self.statuses: list[dict[str, Any]] = []  # consumed per poll before a job is ready
         self.files: dict[str, xr.Dataset | pd.DataFrame] = {}
         self.jobs: dict[str, str] = {}
@@ -51,6 +60,8 @@ class FakeService:
         self.series: pd.DataFrame | None = None
         self.cancelled: list[str] = []
         self.search_hits: Any = None  # None: one hit for the queried collection
+        self.searches: list[dict[str, Any]] = []
+        self.honour_filters = True
 
     def _days(self, time_range: str) -> list[str]:
         start, end = (part[:10] for part in time_range.split("/"))
@@ -60,7 +71,13 @@ class FakeService:
     def coverage(self, args: dict[str, Any]) -> dict[str, Any]:
         days = self._days(args["time_range"])
         count = len(days) if self.days_with_data is None else sum(d in self.days_with_data for d in days)
-        return {"granule_count": count}
+        return {"granule_count": count * self.granules_per_day}
+
+    def estimate(self, args: dict[str, Any]) -> dict[str, Any]:
+        day = args["time_range"][:10]
+        size = self.sizes_by_day[day] if day in self.sizes_by_day else self.estimated_bytes
+        # The service's own shape; no granule size reported reads as 0 MB over the granules.
+        return {"total_granules": 1, "total_size_mb": 0.0 if size is None else size / 1024 ** 2}
 
     def submit(self, args: dict[str, Any]) -> dict[str, Any]:
         index = len(self.jobs) + 1
@@ -82,11 +99,18 @@ class FakeService:
         return {"job_handle": args["job_handle"], "status": "ready", "obs_handle": self.jobs[args["job_handle"]]}
 
     def search(self, args: dict[str, Any]) -> dict[str, Any]:
+        self.searches.append(args)
+        # A concept_id filter keeps only that collection's hits, as the service's search does.
+        concept_id = (args.get("filters") or {}).get("concept_id") if self.honour_filters else None
         if self.search_hits is not None:
-            return {"datasets": self.search_hits}
+            hits = self.search_hits
+            if concept_id is not None and isinstance(hits, list):
+                hits = [h for h in hits if _concept_id(h) == concept_id]
+            return {"datasets": hits}
         # The service's own shape: each hit's fields sit under its summary.
         return {"datasets": [{"handle": "dataset_1", "summary": {
-            "concept_id": args["query"], "short_name": "TEMPO_NO2_L3", "version": "V04", "entry_title": "TEMPO NO2",
+            "concept_id": concept_id or args["query"], "short_name": "TEMPO_NO2_L3", "version": "V04",
+            "entry_title": "TEMPO NO2",
         }}], "count": 1}
 
     def cancel(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -99,11 +123,7 @@ class FakeService:
             "cancel_retrieval": self.cancel,
             "define_area_of_interest": lambda args: {"handle": "aoi_1", "location": args["location"]},
             "check_coverage": self.coverage,
-            # The service's own shape; no granule size reported reads as 0 MB over the granules.
-            "estimate_retrieval_size": lambda args: {
-                "total_granules": 1,
-                "total_size_mb": 0.0 if self.estimated_bytes is None else self.estimated_bytes / 1024 ** 2,
-            },
+            "estimate_retrieval_size": self.estimate,
             "retrieve_subset": self.submit,
             "retrieve_timeseries": self.submit_series,
             "get_retrieval_status": self.status,
@@ -292,6 +312,35 @@ class SizeGateTests(SatelliteCase):
             "checked against the size limits.",
             result.disclosures,
         )
+
+    async def test_a_sized_part_above_the_hard_cap_is_refused_even_when_another_part_is_unsized(self):
+        self.service.sizes_by_day = {"2024-06-01": 300_000_000, "2024-06-02": None}
+        failure = await self.failure(self.params(dates=["2024-06-01", "2024-06-02"], date_role="comparison", confirmed=True))
+        self.assertEqual(failure.category, FailureCategory.REQUEST_TOO_LARGE)
+        self.assertIn("at least about 300 MB, above the 200 MB limit", failure.reason)
+        self.assertNotIn("retrieve_subset", self.tools())
+
+    async def test_the_unsized_allowance_counts_only_the_unsized_parts_granules(self):
+        # 40 granules in all, but only the 20 of the unsized day go unchecked: within the allowance.
+        self.service.granules_per_day = 20
+        self.service.sizes_by_day = {"2024-06-01": 1000, "2024-06-02": None}
+        result = await invoke(self.env, GET, self.params(dates=["2024-06-01", "2024-06-02"], date_role="comparison"))
+        self.assertEqual(result.status, "done")
+        self.assertIn(
+            "The data provider reports no size for TEMPO_NO2's files, so this retrieval of 20 granules was not "
+            "checked against the size limits.",
+            result.disclosures,
+        )
+
+    async def test_an_unsized_part_past_the_allowance_asks_and_names_the_sized_part(self):
+        self.service.granules_per_day = 30
+        self.service.sizes_by_day = {"2024-06-01": 1000, "2024-06-02": None}
+        result = await invoke(self.env, GET, self.params(dates=["2024-06-01", "2024-06-02"], date_role="comparison"))
+        self.assertEqual(result.status, "needs_input")
+        assert result.question is not None
+        self.assertIn("plus a part of unknown size", result.question.prompt)
+        self.assertNotIn("soft limit", result.question.prompt)
+        self.assertNotIn("retrieve_subset", self.tools())
 
     def test_the_size_gate_lets_only_small_unsized_retrievals_through(self):
         from tta_backend.domain.earthdata.retrieval import MAX_UNSIZED_GRANULES, size_gate
@@ -488,6 +537,18 @@ class DatasetChoiceTests(SatelliteCase):
         self.assertEqual(result.status, "done")
         submit = next(args for tool, args in self.earthdata.calls if tool == "retrieve_subset")
         self.assertEqual(submit["dataset_handle"], "dataset_1")
+
+    async def test_the_dataset_search_is_filtered_to_the_collections_concept_id(self):
+        await invoke(self.env, GET, self.params())
+        [search] = self.service.searches
+        self.assertEqual(search, {"query": TEMPO_COLLECTION, "filters": {"concept_id": TEMPO_COLLECTION}})
+
+    async def test_a_reply_that_ignores_the_filter_is_still_checked_for_the_exact_collection(self):
+        self.service.honour_filters = False
+        self.service.search_hits = [{"handle": "dataset_other", "concept_id": "C0000000001-OTHER"}]
+        failure = await self.failure(self.params())
+        self.assertEqual(failure.category, FailureCategory.INTERNAL_ERROR)
+        self.assertNotIn("retrieve_subset", self.tools())
 
     async def test_a_search_without_the_chosen_collection_retrieves_nothing(self):
         self.service.search_hits = [{"handle": "dataset_other", "concept_id": "C0000000001-OTHER"}]

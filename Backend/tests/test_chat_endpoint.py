@@ -363,10 +363,17 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         # every other MCP-backed endpoint — never fail inside the
         # StreamingResponse generator after a 200 has been committed.
         # No earthdata_mcp_manager on app.state (lifespan never ran here),
-        # which reads as "connecting" — not ready.
+        # which reads as "connecting" — not ready. The chart is the user's and
+        # no harness run drew it, so its export needs the data service.
+        payload = {"chart_id": "chart-1", "title": "TEMPO over Texas", "export": {"type": "heatmap"},
+                   "user_id": self.user.id}
+
+        async def fake_get_chart(chart_id):
+            return payload
+
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
-        with auth_patches:
+        with auth_patches, patch.object(self.api.chart_service, "get_chart", fake_get_chart):
             async with self.httpx.AsyncClient(
                 transport=transport,
                 base_url="http://testserver",
@@ -485,10 +492,17 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_chart_netcdf_export_503s_with_the_taxonomy_body_when_the_mcp_is_not_ready(self):
         # export.nc must speak the shared error taxonomy like every other
-        # MCP-backed endpoint, not a bespoke 503.
+        # MCP-backed endpoint, not a bespoke 503. The chart is the user's and
+        # no harness run drew it, so its conversion needs the data service.
+        payload = {"chart_id": "chart-1", "title": "TEMPO over Texas",
+                   "metadata": {"source_handles": ["obs_1"]}, "user_id": self.user.id}
+
+        async def fake_get_chart(chart_id):
+            return payload
+
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
-        with auth_patches:
+        with auth_patches, patch.object(self.api.chart_service, "get_chart", fake_get_chart):
             async with self.httpx.AsyncClient(
                 transport=transport,
                 base_url="http://testserver",

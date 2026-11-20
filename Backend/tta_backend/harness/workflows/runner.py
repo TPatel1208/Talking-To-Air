@@ -44,7 +44,7 @@ from tta_backend.harness.capabilities.registry import CapabilityRegistry
 from tta_backend.harness.capabilities.result import CapabilityResult
 from tta_backend.harness.knowledge import NoteCatalogue
 from tta_backend.harness.results import Finding, Gap, Mode, Result, ResultStatus
-from tta_backend.harness.run_context import RunContext, RunEnv
+from tta_backend.harness.run_context import RunContext, RunEnv, report_finished
 from tta_backend.harness.trace import Run, RunClosed, RunStatus, new_run_id
 from tta_backend.harness.workflows.compile import (
     CANCELLED,
@@ -389,12 +389,20 @@ class WorkflowRunner:
     async def _guarded(
         self, context: RunContext, run_id: str, spec: WorkflowSpec, body: Callable[[], Awaitable[Result]]
     ) -> Result:
-        """Run ``body`` so the run is always finished.
+        """Run ``body`` so the run is always finished, and say so with the
+        run's ``finished`` progress line.
 
         A cancelled task finishes the run as cancelled and the cancellation
         goes on. A run cancelled from elsewhere is a cancelled result. Anything
         else is an internal error: the run is finished as failed, with fixed wording.
         """
+        result = await self._finished(context, run_id, spec, body)
+        report_finished(context.events, run_id, result.status)
+        return result
+
+    async def _finished(
+        self, context: RunContext, run_id: str, spec: WorkflowSpec, body: Callable[[], Awaitable[Result]]
+    ) -> Result:
         try:
             return await body()
         except asyncio.CancelledError:

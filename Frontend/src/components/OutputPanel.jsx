@@ -3,6 +3,7 @@ import { asSmokeMap } from '../utils/hmsMap.js'
 import { TimeSeriesPanel, ProfilePanel, ChartToolbar } from './ChartMessage'
 import MapLibreHeatmapPanel from './MapLibreHeatmapPanel.jsx'
 import MapLibreSmokePanel from './MapLibreSmokePanel.jsx'
+import MapLibrePolygonPanel from './MapLibrePolygonPanel.jsx'
 import HeatmapMultiPanel from './HeatmapMultiPanel.jsx'
 import CompareGrid from './CompareGrid.jsx'
 import ArtifactMessage, { TableArtifactMessage } from './ArtifactMessage'
@@ -775,6 +776,8 @@ function MetadataTab({ chart, artifact, onViewStatistics }) {
 
 const CHART_TABS = {
   smoke_map: ['map'],
+  // A polygon map that is not smoke; smoke is shown as smoke_map (asSmokeMap).
+  polygon_map: ['map', 'metadata'],
   heatmap: ['map', 'statistics', 'metadata'],
   heatmap_multi: ['map', 'metadata'],
   timeseries: ['chart', 'statistics', 'metadata'],
@@ -792,6 +795,8 @@ const ARTIFACT_TABS = {
   table: ['table', 'metadata'],
   timeseries: ['metadata'],
 }
+// Polygon maps have no gridded variable to relate and no figure or table export of their own.
+const POLYGON_TYPES = new Set(['smoke_map', 'polygon_map'])
 const TAB_LABELS = { map: 'Map', chart: 'Chart', statistics: 'Statistics', metadata: 'Metadata', table: 'Table' }
 
 const PANEL_COUNTS = [2, 3, 4]
@@ -1237,10 +1242,11 @@ export default function OutputPanel({
           </>
         )}
         {activeTab === 'map' && chart.type === 'smoke_map' && <MapLibreSmokePanel payload={chart} />}
+        {activeTab === 'map' && chart.type === 'polygon_map' && <MapLibrePolygonPanel payload={chart} />}
         {activeTab === 'map' && chart.type === 'heatmap_multi' && <HeatmapMultiPanel payload={chart} />}
         {activeTab === 'chart' && chart.type === 'timeseries' && <TimeSeriesPanel payload={chart} />}
         {activeTab === 'chart' && chart.type === 'profile' && <ProfilePanel payload={chart} />}
-        {chart.type !== 'smoke_map' && (activeTab === 'map' || activeTab === 'chart') && (
+        {!POLYGON_TYPES.has(chart.type) && (activeTab === 'map' || activeTab === 'chart') && (
           <RelatedVariablesPanel chart={chart} onSend={onSend} />
         )}
         {/* The tab follows the slider. It also has to follow the TOGGLE,
@@ -1255,7 +1261,7 @@ export default function OutputPanel({
         )}
       </div>
 
-      {chart.type !== 'smoke_map' && (activeTab === 'map' || activeTab === 'chart') && (
+      {!POLYGON_TYPES.has(chart.type) && (activeTab === 'map' || activeTab === 'chart') && (
         <div style={{ padding: '0 22px 14px', flexShrink: 0 }}>
           <ChartToolbar chart={chart} plotRootRef={plotRootRef} />
         </div>
