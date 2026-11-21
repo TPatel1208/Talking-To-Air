@@ -33,6 +33,7 @@
 #   stream: null                   # standard | near_real_time
 #   latency_days: null             # whole days from observation to publication
 #                                  # (0 = today's data is already appearing, 1 = yesterday is complete)
+#                                  # seasonal and annual: days from the end of the period
 #   retention_days: null           # whole days of recent data a rolling archive keeps;
 #                                  # omit when everything since record_start is kept
 #   rank: null                     # order among entries sharing a quantity, 1 best, unique per quantity
@@ -83,6 +84,93 @@ TROPOMI_NO2:
   stream: standard
   latency_days: 58
   rank: 4
+  provider: NASA GES DISC
+  instrument: TROPOMI/Sentinel-5P
+  primary_var: Tropospheric_NO2
+  quality_flag_var: null
+  variables:
+    - Tropospheric_NO2
+    - Number_obs
+  supports_variable_subsetting: false
+  units: molecules/cm^2
+  fill_value: -999.0
+  valid_min: -1.0e+15
+  valid_max:  1.0e+18
+  groups: []
+
+# The annual and seasonal cuts of the TROPOMI_NO2 family (CMR, 2026-11-20).
+# Each granule is one mean over its period of the pixels with qa_value of 0.75
+# or more. Their latency_days count from the END of the period: the resolver
+# treats a day as published once its whole year or season is. The CONUS cuts
+# rank ahead of the global one because their 0.01-degree grid is finer; they
+# serve only areas inside their box. All rank after the monthly product, so
+# none is the default while a finer product fits.
+TROPOMI_NO2_CONUS_ANNUAL:
+  collection_id: C2839237129-GES_DISC
+  short_name: HAQ_TROPOMI_NO2_CONUS_A_L3
+  version: "2.4"
+  description: Tropomi NO2 annual mean over CONUS, 0.01 degree
+  cadence: annual
+  quantity: no2_tropospheric_column
+  coverage: {west: -124.75, south: 24.5, east: -66.76, north: 49.49}
+  record_start: 2019-01-01
+  stream: standard
+  latency_days: 85
+  rank: 5
+  provider: NASA GES DISC
+  instrument: TROPOMI/Sentinel-5P
+  primary_var: Tropospheric_NO2
+  quality_flag_var: null
+  variables:
+    - Tropospheric_NO2
+    - Number_obs
+  supports_variable_subsetting: false
+  units: molecules/cm^2
+  fill_value: -999.0
+  valid_min: -1.0e+15
+  valid_max:  1.0e+18
+  groups: []
+
+TROPOMI_NO2_ANNUAL:
+  collection_id: C3087325001-GES_DISC
+  short_name: HAQ_TROPOMI_NO2_GLOBAL_A_L3
+  version: "2.4"
+  description: Tropomi NO2 annual mean, global 0.1 degree
+  cadence: annual
+  quantity: no2_tropospheric_column
+  coverage: {west: -179.5, south: -60, east: 179.5, north: 75}
+  record_start: 2019-01-01
+  stream: standard
+  latency_days: 85
+  rank: 6
+  provider: NASA GES DISC
+  instrument: TROPOMI/Sentinel-5P
+  primary_var: Tropospheric_NO2
+  quality_flag_var: null
+  variables:
+    - Tropospheric_NO2
+    - Number_obs
+  supports_variable_subsetting: false
+  units: molecules/cm^2
+  fill_value: -999.0
+  valid_min: -1.0e+15
+  valid_max:  1.0e+18
+  groups: []
+
+# Seasons are DJF, MAM, JJA and SON; DJF is named by its December's year
+# ("DJF_2018" runs 2018-12-01 to 2019-02-28). The record starts with JJA 2018.
+TROPOMI_NO2_CONUS_SEASONAL:
+  collection_id: C2839237223-GES_DISC
+  short_name: HAQ_TROPOMI_NO2_CONUS_S_L3
+  version: "2.4"
+  description: Tropomi NO2 seasonal mean over CONUS, 0.01 degree
+  cadence: seasonal
+  quantity: no2_tropospheric_column
+  coverage: {west: -124.75, south: 24.5, east: -66.76, north: 49.49}
+  record_start: 2018-06-01
+  stream: standard
+  latency_days: 58
+  rank: 7
   provider: NASA GES DISC
   instrument: TROPOMI/Sentinel-5P
   primary_var: Tropospheric_NO2

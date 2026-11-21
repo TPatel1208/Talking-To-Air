@@ -32,6 +32,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from tta_backend.datasets.cadence import PANDAS_FLOOR, PANDAS_PERIOD, PANDAS_STEP
 from tta_backend.domain import xarray_ops
 from tta_backend.domain.geo import find_lat_coord, find_lon_coord
 
@@ -110,13 +111,10 @@ POOLED_SCALE_BASIS = (
     "untouched"
 )
 
-# Cadence -> the pandas offset a timestamp is floored to. The same bucketing
-# ``_cadence_weighted_mean`` does, so a frame and the map agree about which
-# granules belong to which interval.
-_CADENCE_FLOOR = {"hourly": "h", "daily": "D"}
-# Cadence -> the offset the FULL axis steps by. Distinct from the floor because
-# a month is not a fixed duration: "MS" walks month starts, "D" would not.
-_CADENCE_STEP = {"hourly": "h", "daily": "D", "monthly": "MS"}
+# Cadence -> the offset the FULL axis steps by. Distinct from the bucketing
+# because a month, season or year is not a fixed duration: "MS", "QS-DEC" and
+# "YS" walk period starts, "D" would not.
+_CADENCE_STEP = PANDAS_STEP
 
 BUCKETABLE_CADENCES = tuple(_CADENCE_STEP)
 
@@ -411,10 +409,15 @@ def coarsen_factors(n_lat: int, n_lon: int, target_cells: int) -> tuple[int, int
 
 
 def _bucket_starts(stamps: pd.DatetimeIndex, cadence: str) -> pd.DatetimeIndex:
-    """Each timestamp floored to the start of its cadence bucket."""
-    if cadence == "monthly":
-        return stamps.to_period("M").to_timestamp()
-    return stamps.floor(_CADENCE_FLOOR[cadence])
+    """Each timestamp floored to the start of its cadence bucket.
+
+    Months, seasons and years snap to the calendar period holding the stamp,
+    so a DJF stamp in January or February lands on the December the season
+    starts in. ``_cadence_weighted_mean`` buckets the same way, so a frame and
+    the map agree about which granules belong to which interval."""
+    if cadence in PANDAS_PERIOD:
+        return stamps.to_period(PANDAS_PERIOD[cadence]).to_timestamp()
+    return stamps.floor(PANDAS_FLOOR[cadence])
 
 
 def _axis_starts(span: tuple[str, str], cadence: str) -> pd.DatetimeIndex:

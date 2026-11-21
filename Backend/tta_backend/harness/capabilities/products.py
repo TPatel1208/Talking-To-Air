@@ -34,7 +34,25 @@ Dates. A single date, a ``DateRange`` or a list. Every requested day must be
 inside the record, still held and published. A rolling window of N
 ``retention_days`` holds today and the N days before it, so the oldest day
 held is today minus N. Published means on or before today minus
-``latency_days``, and never after today.
+``latency_days``, and never after today. A seasonal or annual file holds its
+whole period, so for those products the period holding the last requested day
+must have ended on or before today minus ``latency_days``.
+
+Cadence. ``cadence_needed`` is the finest cadence the analysis needs; a
+coarser product is ruled out as ``cadence_too_coarse``. Cadences from finest:
+hourly, daily, monthly, seasonal, annual.
+
+Names and cadence words. A name that is no key or short name is read as an
+instrument, optionally with one cadence word (hourly, daily, monthly,
+seasonal, annual or yearly) before or after it: "TROPOMI annual" matches the
+instrument's annual products. An instrument named without a cadence word
+matches only its products at monthly cadence or finer, so a seasonal or
+annual mean is used only when asked for by name or cadence word, or when the
+registry picks it because nothing finer fits. When several products of one
+instrument and cadence fit, the registry rank decides, and a regional
+product on a finer grid ranks ahead of its global counterpart: an area
+inside CONUS gets the 0.01-degree CONUS product, one outside it the global
+one.
 """
 from __future__ import annotations
 
@@ -44,9 +62,8 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Literal
 
+from tta_backend.datasets.cadence import CADENCE_ORDER, Cadence, period_end
 from tta_backend.datasets.registry import CollectionConfig, CoverageBox
-
-Cadence = Literal["hourly", "daily", "monthly"]
 
 REGISTRY_DEFAULT = "registry_default"
 
@@ -100,7 +117,14 @@ UnavailableReason = Literal[
 
 NoDataSituation = Literal["outside_record", "not_published_yet"]
 
-_CADENCE_ORDER: dict[str, int] = {"hourly": 0, "daily": 1, "monthly": 2}
+# Cadence words a name may carry beside an instrument.
+_CADENCE_WORDS: dict[str, Cadence] = {
+    "hourly": "hourly", "daily": "daily", "monthly": "monthly",
+    "seasonal": "seasonal", "annual": "annual", "yearly": "annual",
+}
+
+# Cadences whose file holds one mean over a whole season or year.
+_PERIOD_MEANS = frozenset({"seasonal", "annual"})
 
 
 @dataclass(frozen=True)
@@ -354,7 +378,9 @@ def _match_named(
     Tried in order, the first non-empty match wins: the registry key, the
     short name, then the instrument (the whole string, or any part split on
     '/', '+', ',' or spaces, so "OMI" and "Aura" both match "OMI/Aura").
-    Case, spaces and punctuation are ignored."""
+    Case, spaces and punctuation are ignored. An instrument may carry one
+    cadence word, which keeps its products of that cadence; without one, its
+    seasonal and annual products are left out."""
     want = _norm(named)
     if not want:
         return (), False
@@ -364,12 +390,17 @@ def _match_named(
     by_short = tuple(k for k, c in registry.items() if c.short_name and _norm(c.short_name) == want)
     if by_short:
         return by_short, len(by_short) == 1
+    words = [w for w in re.split(r"[^a-z0-9]+", named.lower()) if w]
+    cadences = {_CADENCE_WORDS[w] for w in words if w in _CADENCE_WORDS}
+    if len(cadences) > 1:
+        return (), False
+    instrument = "".join(w for w in words if w not in _CADENCE_WORDS)
     by_instrument = tuple(
         k for k, c in registry.items()
-        if c.instrument and (
-            _norm(c.instrument) == want
-            or want in {_norm(p) for p in re.split(r"[/+,\s]+", c.instrument)}
-        )
+        if c.instrument and instrument and (
+            _norm(c.instrument) == instrument
+            or instrument in {_norm(p) for p in re.split(r"[/+,\s]+", c.instrument)}
+        ) and (c.cadence in cadences if cadences else c.cadence not in _PERIOD_MEANS)
     )
     return by_instrument, False
 
@@ -471,16 +502,26 @@ def _check(
         newest = today
     else:
         newest = today - timedelta(days=cfg.latency_days)
-    if last > newest and (cfg.record_end is None or last <= cfg.record_end):
+    # One file holds the whole season or year, published after the period ends.
+    covered = period_end(last, cfg.cadence) if cfg.cadence in _PERIOD_MEANS else last
+    if covered > newest and (cfg.record_end is None or last <= cfg.record_end):
         latency = "unknown" if cfg.latency_days is None else f"{cfg.latency_days}-day"
-        out.append(RuledOut(
-            "not_published_yet",
-            f"published through {newest} ({latency} latency); dates run to {last}",
-        ))
+        if covered == last:
+            detail = f"published through {newest} ({latency} latency); dates run to {last}"
+        elif cfg.latency_days is None:
+            detail = f"its {cfg.cadence} mean holding {last} runs to {covered}, after today"
+        else:
+            detail = (
+                f"its {cfg.cadence} mean holding {last} runs to {covered} and is published "
+                f"{cfg.latency_days} days after that, from {covered + timedelta(days=cfg.latency_days)}"
+            )
+        out.append(RuledOut("not_published_yet", detail))
 
-    if cadence_needed is not None and _CADENCE_ORDER[cfg.cadence] > _CADENCE_ORDER[cadence_needed]:
+    if cadence_needed is not None and CADENCE_ORDER[cfg.cadence] > CADENCE_ORDER[cadence_needed]:
+        article = "an" if cfg.cadence[0] in "aeiou" else "a"
         out.append(RuledOut(
-            "cadence_too_coarse", f"a {cfg.cadence} product, so {cadence_needed} values are not available",
+            "cadence_too_coarse",
+            f"{article} {cfg.cadence} product, so {cadence_needed} values are not available",
         ))
 
     return Considered(key, vouched, tuple(out), tuple(unchecked))

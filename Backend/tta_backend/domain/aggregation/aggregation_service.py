@@ -18,6 +18,7 @@ from tta_backend.datasets.qa_flags import (
     QA_VERIFIED,
     resolve_qa_info,
 )
+from tta_backend.datasets.cadence import CADENCES, PANDAS_FLOOR, PANDAS_PERIOD
 from tta_backend.datasets.registry import load_registry
 from tta_backend.domain.errors import CATEGORY_NO_DATA, CATEGORY_VARIABLE_CHOICE_REQUIRED, MCPToolError
 from tta_backend.domain.aggregation.variable_choice import build_variable_choice
@@ -1233,10 +1234,6 @@ class AggregationService:
         resolved (data attrs -> col_info -> registry)."""
         return self._cadence(data, collection_id, variable, col_info)
 
-    # Cadence -> the pandas offset a timestamp is floored to when grouping
-    # granules into the buckets a temporal mean must weight equally (#11).
-    _CADENCE_FLOOR = {"hourly": "h", "daily": "D"}
-
     def _cadence_weighted_mean(self, da: xr.DataArray, time_dim: str, cadence: str) -> xr.DataArray:
         """Per-pixel temporal mean that weights each cadence bucket equally,
         not each granule -- so 'average over the period' is not
@@ -1245,7 +1242,8 @@ class AggregationService:
         Each timestep's weight is ``1 / (granules in its bucket that have a
         value AT THIS PIXEL)``, so every bucket contributes weight 1 to the
         mean regardless of how many granules landed in it. Buckets come from
-        flooring the timestamp to the product's cadence (hour/day/month). An
+        flooring the timestamp to the product's cadence (hour/day), or to the
+        calendar month, season or year holding it. An
         unknown or unbucketable cadence can't define a period, so it falls back
         to the plain unweighted mean -- as does an evenly-cadenced series,
         where every bucket holds exactly one granule and the weights are
@@ -1260,14 +1258,14 @@ class AggregationService:
         weight rather than a ``groupby(...).mean().mean("bucket")`` so the
         reduction keeps its shape: same laziness, same dim order, same attrs.
         """
-        if cadence not in ("hourly", "daily", "monthly"):
+        if cadence not in CADENCES:
             return da.reduce(np.nanmean, dim=time_dim)
         try:
             stamps = pd.to_datetime(np.asarray(da[time_dim].values))
-            if cadence == "monthly":
-                buckets = stamps.to_period("M")
+            if cadence in PANDAS_PERIOD:
+                buckets = stamps.to_period(PANDAS_PERIOD[cadence])
             else:
-                buckets = stamps.floor(self._CADENCE_FLOOR[cadence])
+                buckets = stamps.floor(PANDAS_FLOOR[cadence])
             labels = np.asarray([str(b) for b in buckets])
         except Exception:
             # Non-datetime or otherwise unbucketable time axis -- never fatal.
@@ -1343,11 +1341,10 @@ class AggregationService:
                 times = [start]
         # An unknown cadence is disclosed as plain "granules" — never dressed
         # up as a frequency word the data never claimed.
-        cadence_label = {"hourly": "hourly", "daily": "daily", "monthly": "monthly"}.get(cadence, cadence)
         if cadence == "unknown":
             granule_str = f"{n_granules} granule{'s' if n_granules != 1 else ''}"
         else:
-            granule_str = f"{n_granules} {cadence_label} granule{'s' if n_granules != 1 else ''}"
+            granule_str = f"{n_granules} {cadence} granule{'s' if n_granules != 1 else ''}"
 
         # A frequency period word ("Annual"/"Daily") is inferred from the
         # granule *count*, but the count only implies a span under the assumed

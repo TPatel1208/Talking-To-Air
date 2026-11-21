@@ -11,6 +11,7 @@ from collections.abc import Sequence
 from datetime import date, datetime, timedelta
 from typing import Any, Literal
 
+from tta_backend.datasets.cadence import PERIOD_MONTHS, shift_period
 from tta_backend.datasets.registry import CollectionConfig, load_registry
 
 # "not_found" is a handle the workspace still lists after the service evicted
@@ -213,18 +214,14 @@ def bbox_location(bounds: Sequence[float]) -> str:
     ])
 
 
-def _shift_month(day: date, months: int) -> date:
-    index = day.year * 12 + day.month - 1 + months
-    return date(index // 12, index % 12 + 1, 1)
-
-
 def nearby_dates(day: date, cadence: str, *, today: date, end: date | None = None) -> list[date]:
     """Dates to look at when ``day`` (or the span from ``day`` to ``end``) has
     no data, nearest first and never after ``today``: three days either side
-    for hourly and daily data, the month either side for monthly data."""
+    for hourly and daily data, and the first day of the period either side for
+    monthly, seasonal and annual data."""
     last = day if end is None else end
-    if cadence == "monthly":
-        candidates = [_shift_month(day, -1), _shift_month(last, 1)]
+    if cadence in PERIOD_MONTHS:
+        candidates = [shift_period(day, cadence, -1), shift_period(last, cadence, 1)]
     else:
         candidates = [
             (day - timedelta(days=k)) if sign < 0 else (last + timedelta(days=k))

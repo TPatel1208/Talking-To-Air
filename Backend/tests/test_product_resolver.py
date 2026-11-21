@@ -438,3 +438,45 @@ def test_real_registry_still_loads():
     registry = load_registry()
     assert "TEMPO_NO2" in registry
     assert all(isinstance(cfg, CollectionConfig) for cfg in registry.values())
+
+
+def test_a_cadence_word_keeps_the_named_instruments_products_of_that_cadence():
+    hourly = _resolve(named="TEMPO hourly")
+    assert hourly.product == "NO2_STD"
+    assert {c.key for c in hourly.considered} == {"NO2_STD", "NO2_NRT", "HCHO_STD", "BARE"}
+    assert _resolve(named="monthly TROPOMI").product == "NO2_MONTHLY"
+    assert _resolve(named="OMI monthly").unavailable == "named_not_registered"
+    assert _resolve(named="annual").unavailable == "named_not_registered"
+
+
+def test_an_unknown_cadence_is_rejected_by_the_registry():
+    with pytest.raises(ValidationError):
+        _cfg(cadence="weekly")
+
+
+PERIODS = {
+    "YEARS": _cfg(
+        short_name="Y_L3", instrument="SAT", cadence="annual", quantity=NO2, coverage="global",
+        record_start=date(2019, 1, 1), latency_days=85, rank=1,
+    ),
+    "SEASONS": _cfg(
+        short_name="S_L3", instrument="SAT", cadence="seasonal", quantity=NO2, coverage="global",
+        record_start=date(2018, 6, 1), latency_days=58, rank=2,
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("named", "day", "today", "published"),
+    [
+        ("YEARS", date(2025, 1, 1), date(2026, 3, 26), True),
+        ("YEARS", date(2025, 12, 31), date(2026, 3, 25), False),
+        ("SEASONS", date(2026, 2, 28), date(2026, 4, 27), True),
+        ("SEASONS", date(2025, 12, 1), date(2026, 4, 26), False),
+    ],
+)
+def test_a_period_product_publishes_a_day_once_its_whole_period_has(named, day, today, published):
+    result = _resolve(PERIODS, named=named, dates=day, today=today)
+    assert result.available is published
+    if not published:
+        assert result.considered[0].reasons == {"not_published_yet"}

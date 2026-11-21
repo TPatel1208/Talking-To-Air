@@ -6,6 +6,7 @@ from typing import Annotated, Any, Literal, Self
 import numpy as np
 from pydantic import Field, JsonValue, model_validator
 
+from tta_backend.datasets.cadence import CADENCES
 from tta_backend.domain.analysis.comparison import field_summary
 from tta_backend.domain.analysis.reduction import reduce_over_time, regional_series
 from tta_backend.domain.analysis.statistics import grid_statistic, series_statistic
@@ -42,7 +43,7 @@ class AggregateTimeParams(Params):
 def _time_basis(stat: str, cadence: str) -> str:
     if stat != "mean":
         return "per cell over every valid time step"
-    if cadence in ("hourly", "daily", "monthly"):
+    if cadence in CADENCES:
         return f"each {cadence} period weighted equally"
     return "each time step weighted equally"
 

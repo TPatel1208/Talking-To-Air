@@ -28,6 +28,8 @@ from typing import Any, Literal, Optional
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from tta_backend.datasets.cadence import Cadence
+
 logger = logging.getLogger(__name__)
 
 _REGISTRY_PATH = pathlib.Path(__file__).parent / "collections.yaml"
@@ -63,7 +65,9 @@ class CollectionConfig(BaseModel):
     short_name:    str = ""
     version:       str = ""
     description:   str = ""
-    cadence:       Literal["hourly", "daily", "monthly"] = "daily"
+    # seasonal and annual granules are one mean over a calendar period; see
+    # datasets/cadence.py for how seasons are bounded and named.
+    cadence:       Cadence = "daily"
     # ── Provenance display ──────────────────────────────────────────────────
     # Free-text, not parsed by any masking/aggregation logic -- surfaced as
     # "<provider> — <instrument>" in the Metadata tab's Source dataset block.
@@ -133,7 +137,9 @@ class CollectionConfig(BaseModel):
     stream:       Optional[Literal["standard", "near_real_time"]] = None
     # latency_days: whole days from observation to publication. The newest
     #   day treated as published is today minus this (0 = today's data is
-    #   already appearing, 1 = yesterday is complete).
+    #   already appearing, 1 = yesterday is complete). For a seasonal or
+    #   annual product, whole days from the end of the period, since one
+    #   file holds the whole period.
     latency_days: Optional[int] = Field(default=None, ge=0)
     # retention_days: whole days of recent data a rolling archive keeps. The
     #   oldest day still held is today minus this. Null means everything
@@ -271,6 +277,22 @@ COLLECTIONS_WITHOUT_QUALITY_FLAG: dict[str, str] = {
         "HAQ_TROPOMI_NO2_GLOBAL_M_L3, a MONTHLY global composite -- not the S5P_L2 swath, "
         "whose continuous 0-1 `qa_value` the enumerated doctrine could not express anyway. "
         "Being monthly-only is its real limitation for air-quality work, not the masking"
+    ),
+    "TROPOMI_NO2_ANNUAL": (
+        "CMR-checked 2026-11-20, not granule-verified: HAQ_TROPOMI_NO2_GLOBAL_A_L3, the annual "
+        "cut of the same HAQAST family as TROPOMI_NO2, lists Tropospheric_NO2, Number_obs, "
+        "Latitude and Longitude and no flag band. Its file names say QA75: pixels with "
+        "qa_value of 0.75 or more were averaged before gridding, so screening happened upstream"
+    ),
+    "TROPOMI_NO2_CONUS_ANNUAL": (
+        "CMR-checked 2026-11-20, not granule-verified: HAQ_TROPOMI_NO2_CONUS_A_L3, the 0.01-degree "
+        "CONUS annual cut of the TROPOMI_NO2 family, lists the same four variables and no flag "
+        "band. QA75 file names: pixels with qa_value of 0.75 or more were averaged before gridding"
+    ),
+    "TROPOMI_NO2_CONUS_SEASONAL": (
+        "CMR-checked 2026-11-20, not granule-verified: HAQ_TROPOMI_NO2_CONUS_S_L3, the 0.01-degree "
+        "CONUS seasonal cut of the TROPOMI_NO2 family, lists the same four variables and no flag "
+        "band. QA75 file names: pixels with qa_value of 0.75 or more were averaged before gridding"
     ),
     "VIIRS_AOD_SNPP": (
         "inventory-verified (describe_dataset, 2026-08-02): 13 bands, none a flag. Same "

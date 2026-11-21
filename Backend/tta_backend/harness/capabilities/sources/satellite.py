@@ -47,6 +47,7 @@ from typing import Annotated, Any, Literal, Self
 import pandas as pd
 from pydantic import Field, JsonValue, model_validator
 
+from tta_backend.datasets.cadence import Cadence
 from tta_backend.datasets.registry import CollectionConfig, load_registry
 from tta_backend.domain.earthdata.opening import combine, quality_summary
 from tta_backend.domain.earthdata.retrieval import (
@@ -100,7 +101,8 @@ GROUP = Group(
         "large retrieval. A result with status insufficient_evidence names why there is no data: "
         "outside_record, not_published_yet, gap or too_little_valid. Do not retry it with other dates "
         "or another product unless the user asks. When the user asks for values each day or each hour, "
-        "set cadence, so a monthly-only product is refused instead of read as daily values. search, "
+        "set cadence, so a monthly-only product is refused instead of read as daily values. For an "
+        "annual or seasonal mean, name the instrument with that word, such as named 'TROPOMI annual'. search, "
         "describe and check_availability are cheap lookups that retrieve nothing."
     ),
 )
@@ -112,7 +114,6 @@ _DETAIL_CHARS = 160
 _LISTED = 10
 
 Role = Literal["subject", "comparison", "range"]
-Cadence = Literal["hourly", "daily", "monthly"]
 Approved = list[str] | Literal["registry_default"]
 
 
@@ -151,14 +152,22 @@ _PRODUCT_DESCRIPTION = "Registered product key, one of: " + ", ".join(_PRODUCT_K
 
 class _ProductChoice(Params):
     quantity: str | None = Field(default=None, max_length=100, description=_QUANTITY_DESCRIPTION)
-    named: str | None = Field(default=None, max_length=100, description="A product or instrument the user named.")
+    named: str | None = Field(
+        default=None, max_length=100,
+        description=(
+            "A product or instrument the user named. Add the cadence word the user gave to an "
+            "instrument, such as 'TROPOMI annual' or 'TROPOMI seasonal': an instrument alone means "
+            "its monthly or finer products."
+        ),
+    )
     approved: Approved = Field(default="registry_default", description="The workflow's approved products in order, or registry_default.")
     product: str | None = Field(default=None, max_length=100, description="The product this run already uses for the quantity.")
     cadence: Cadence | None = Field(
         default=None,
         description=(
             "The finest cadence the analysis needs: set daily when the user asks for each day or daily "
-            "values, hourly for hours. A product too coarse for it is refused, never used instead."
+            "values, hourly for hours, monthly for each month. A product too coarse for it is refused, "
+            "never used instead."
         ),
     )
 

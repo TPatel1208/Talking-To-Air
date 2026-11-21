@@ -207,3 +207,144 @@ def test_ozone_profile_is_tempo_only(registry):
 def test_total_ozone_prefers_tempo_over_omi_in_north_america(registry):
     assert _resolve(registry, quantity="o3_total_column").product == "TEMPO_O3TOT"
     assert _resolve(registry, quantity="o3_total_column", area=EUROPE).product == "OMI_O3"
+
+
+# The TROPOMI NO2 annual and seasonal products. Facts checked 2026-11-20.
+PERIOD_TODAY = date(2026, 11, 20)
+TROPOMI_PERIODS = {
+    "TROPOMI_NO2_ANNUAL": ("annual", "HAQ_TROPOMI_NO2_GLOBAL_A_L3", "C3087325001-GES_DISC"),
+    "TROPOMI_NO2_CONUS_ANNUAL": ("annual", "HAQ_TROPOMI_NO2_CONUS_A_L3", "C2839237129-GES_DISC"),
+    "TROPOMI_NO2_CONUS_SEASONAL": ("seasonal", "HAQ_TROPOMI_NO2_CONUS_S_L3", "C2839237223-GES_DISC"),
+}
+
+
+def _period(registry, **over):
+    return _resolve(registry, **{"today": PERIOD_TODAY, "dates": LAST_YEAR, **over})
+
+
+def test_tropomi_period_products_are_registered_like_the_monthly_one(registry):
+    monthly = registry["TROPOMI_NO2"]
+    for key, (cadence, short_name, collection_id) in TROPOMI_PERIODS.items():
+        cfg = registry[key]
+        assert (cfg.cadence, cfg.short_name, cfg.collection_id, cfg.version) == (
+            cadence, short_name, collection_id, "2.4",
+        ), key
+        assert cfg.quantity == NO2, key
+        assert cfg.rank > monthly.rank, key
+        for field in ("primary_var", "variables", "units", "fill_value", "valid_min", "valid_max",
+                      "quality_flag_var", "instrument", "provider"):
+            assert getattr(cfg, field) == getattr(monthly, field), (key, field)
+
+
+def test_conus_period_products_cover_conus_only(registry):
+    for key in ("TROPOMI_NO2_CONUS_ANNUAL", "TROPOMI_NO2_CONUS_SEASONAL"):
+        assert registry[key].coverage == CoverageBox(west=-124.75, south=24.5, east=-66.76, north=49.49)
+    assert registry["TROPOMI_NO2_CONUS_SEASONAL"].record_start == date(2018, 6, 1)
+
+
+def test_the_conus_annual_product_ranks_ahead_of_the_global_one(registry):
+    assert registry["TROPOMI_NO2_CONUS_ANNUAL"].rank < registry["TROPOMI_NO2_ANNUAL"].rank
+
+
+def test_with_no_product_named_no2_in_europe_after_omi_ends_stays_monthly(registry):
+    result = _period(registry, area=EUROPE, dates=date(2026, 4, 15))
+    assert result.product == "TROPOMI_NO2"
+    order = [c.key for c in result.considered]
+    assert order.index("TROPOMI_NO2") < min(order.index(k) for k in TROPOMI_PERIODS)
+
+
+def test_with_no_product_named_the_period_products_rank_last(registry):
+    result = _period(registry, area=EUROPE)
+    assert result.product == "OMI_NO2"
+    order = [c.key for c in result.considered]
+    assert order[-3:] == ["TROPOMI_NO2_CONUS_ANNUAL", "TROPOMI_NO2_ANNUAL", "TROPOMI_NO2_CONUS_SEASONAL"]
+
+
+def test_the_instrument_alone_still_means_the_monthly_product(registry):
+    result = _period(registry, named="TROPOMI", dates=date(2024, 1, 15))
+    assert (result.product, result.rule) == ("TROPOMI_NO2", "only_candidate")
+    assert [c.key for c in result.considered] == ["TROPOMI_NO2"]
+
+
+def test_the_instrument_alone_does_not_fall_back_to_a_seasonal_mean(registry):
+    result = _period(registry, named="TROPOMI", dates=date(2018, 7, 1))
+    assert (result.product, result.unavailable) == (None, "named_product_unsuitable")
+
+
+@pytest.mark.parametrize("named", ["TROPOMI annual", "yearly TROPOMI", "tropomi-annual"])
+def test_tropomi_annual_over_new_jersey_is_the_conus_product(registry, named):
+    result = _period(registry, named=named)
+    assert (result.product, result.rule) == ("TROPOMI_NO2_CONUS_ANNUAL", "highest_rank")
+    assert {c.key for c in result.considered} == {"TROPOMI_NO2_ANNUAL", "TROPOMI_NO2_CONUS_ANNUAL"}
+
+
+def test_tropomi_annual_over_europe_is_the_global_product(registry):
+    result = _period(registry, named="TROPOMI annual", area=EUROPE)
+    assert (result.product, result.rule) == ("TROPOMI_NO2_ANNUAL", "only_candidate")
+    assert [(c.key, c.reasons) for c in result.skipped] == [
+        ("TROPOMI_NO2_CONUS_ANNUAL", frozenset({"area_outside_coverage"})),
+    ]
+
+
+def test_tropomi_seasonal_over_europe_is_refused_as_conus_only(registry):
+    result = _period(registry, named="TROPOMI seasonal", area=EUROPE)
+    assert (result.product, result.unavailable) == (None, "named_product_unsuitable")
+    assert [(c.key, c.reasons) for c in result.considered] == [
+        ("TROPOMI_NO2_CONUS_SEASONAL", frozenset({"area_outside_coverage"})),
+    ]
+
+
+def test_tropomi_seasonal_reaches_back_to_summer_2018(registry):
+    result = _period(registry, named="TROPOMI seasonal", dates=date(2018, 7, 1))
+    assert result.product == "TROPOMI_NO2_CONUS_SEASONAL"
+
+
+@pytest.mark.parametrize("needed", ["daily", "monthly"])
+@pytest.mark.parametrize("key", ["TROPOMI_NO2_ANNUAL", "TROPOMI_NO2_CONUS_ANNUAL"])
+def test_daily_or_monthly_values_from_an_annual_product_are_too_coarse(registry, key, needed):
+    result = _period(registry, named=key, cadence_needed=needed)
+    assert result.unavailable == "named_product_unsuitable"
+    assert result.considered[0].reasons == {"cadence_too_coarse"}
+    assert result.considered[0].ruled_out[0].detail == f"an annual product, so {needed} values are not available"
+
+
+def test_an_annual_product_serves_an_annual_or_seasonal_need(registry):
+    assert _period(registry, named="TROPOMI annual", cadence_needed="annual").product == "TROPOMI_NO2_CONUS_ANNUAL"
+    seasonal = _period(registry, named="TROPOMI_NO2_CONUS_SEASONAL", cadence_needed="annual")
+    assert seasonal.product == "TROPOMI_NO2_CONUS_SEASONAL"
+    too_coarse = _period(registry, named="TROPOMI annual", cadence_needed="seasonal")
+    assert all(c.reasons == {"cadence_too_coarse"} for c in too_coarse.considered)
+
+
+def test_a_year_is_published_only_after_it_ends(registry):
+    published = _period(registry, named="TROPOMI_NO2_ANNUAL", dates=date(2025, 1, 10))
+    assert published.product == "TROPOMI_NO2_ANNUAL"
+    this_year = _period(registry, named="TROPOMI_NO2_ANNUAL", dates=date(2026, 2, 1))
+    assert (this_year.unavailable, this_year.no_data) == ("named_product_unsuitable", "not_published_yet")
+    assert this_year.considered[0].ruled_out[0].detail == (
+        "its annual mean holding 2026-02-01 runs to 2026-12-31 and is published 85 days after that, from 2027-03-26"
+    )
+    # 2025's file appeared 2026-03-25, about 85 days after the year ended.
+    before = _period(registry, named="TROPOMI_NO2_ANNUAL", dates=date(2025, 6, 1), today=date(2026, 3, 20))
+    assert before.no_data == "not_published_yet"
+
+
+def test_a_season_is_published_only_after_it_ends(registry):
+    jja = _period(registry, named="TROPOMI seasonal", dates=date(2026, 6, 15), today=date(2026, 10, 28))
+    assert jja.product == "TROPOMI_NO2_CONUS_SEASONAL"
+    early = _period(registry, named="TROPOMI seasonal", dates=date(2026, 6, 15), today=date(2026, 10, 27))
+    assert early.no_data == "not_published_yet"
+    son = _period(registry, named="TROPOMI seasonal", dates=date(2026, 9, 15))
+    assert son.no_data == "not_published_yet"
+
+
+def test_a_january_day_belongs_to_the_previous_decembers_season(registry):
+    # DJF 2025 ends 2026-02-28, so it is published by late April 2026.
+    jan = _period(registry, named="TROPOMI seasonal", dates=date(2026, 1, 15), today=date(2026, 4, 27))
+    assert jan.product == "TROPOMI_NO2_CONUS_SEASONAL"
+    dec = _period(registry, named="TROPOMI seasonal", dates=date(2025, 12, 15), today=date(2026, 4, 26))
+    assert dec.no_data == "not_published_yet"
+
+
+def test_two_cadence_words_name_nothing(registry):
+    assert _period(registry, named="TROPOMI annual seasonal").unavailable == "named_not_registered"

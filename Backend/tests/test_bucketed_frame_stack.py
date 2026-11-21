@@ -157,6 +157,72 @@ class CadenceIsAPreconditionTests(unittest.TestCase):
         )
         self.assertEqual([f.n_granules for f in stack.frames], [1, 0, 1])
 
+    def test_a_seasonal_product_steps_by_seasons_across_the_year_end(self):
+        """Seasons start in December, March, June and September, and DJF
+        belongs to its December: a January stamp joins the season that began
+        the December before, not a season of its own year."""
+        import numpy as np
+        import xarray as xr
+
+        field = _field(
+            xr, np, ["2018-12-01T00:00", "2019-01-20T00:00", "2019-06-01T00:00"],
+            [np.ones((4, 4)), np.ones((4, 4)) * 3, np.ones((4, 4)) * 5],
+        )
+
+        from tta_backend.domain.aggregation.frame_stack import build_frame_stack
+
+        stack = build_frame_stack(
+            field, time_dim="time", cadence="seasonal",
+            span=("2018-12-01T00:00:00", "2019-08-31T23:59:59"),
+        )
+
+        self.assertEqual(
+            [(f.t_start, f.t_end) for f in stack.frames],
+            [("2018-12-01T00:00:00", "2019-03-01T00:00:00"),
+             ("2019-03-01T00:00:00", "2019-06-01T00:00:00"),
+             ("2019-06-01T00:00:00", "2019-09-01T00:00:00")],
+        )
+        self.assertEqual([f.n_granules for f in stack.frames], [2, 0, 1])
+
+    def test_a_span_starting_inside_a_season_snaps_to_its_start(self):
+        import numpy as np
+        import xarray as xr
+
+        field = _field(xr, np, ["2020-01-01T00:00", "2020-03-01T00:00"], [np.ones((4, 4)), np.ones((4, 4))])
+
+        from tta_backend.domain.aggregation.frame_stack import build_frame_stack
+
+        stack = build_frame_stack(
+            field, time_dim="time", cadence="seasonal",
+            span=("2020-02-10T00:00:00", "2020-04-30T23:59:59"),
+        )
+
+        self.assertEqual([f.t_start for f in stack.frames], ["2019-12-01T00:00:00", "2020-03-01T00:00:00"])
+
+    def test_an_annual_product_steps_by_years(self):
+        import numpy as np
+        import xarray as xr
+
+        field = _field(
+            xr, np, ["2019-01-01T00:00", "2021-01-01T00:00"],
+            [np.ones((4, 4)), np.ones((4, 4)) * 3],
+        )
+
+        from tta_backend.domain.aggregation.frame_stack import build_frame_stack
+
+        stack = build_frame_stack(
+            field, time_dim="time", cadence="annual",
+            span=("2019-06-01T00:00:00", "2021-12-31T23:59:59"),
+        )
+
+        self.assertEqual(
+            [(f.t_start, f.t_end) for f in stack.frames],
+            [("2019-01-01T00:00:00", "2020-01-01T00:00:00"),
+             ("2020-01-01T00:00:00", "2021-01-01T00:00:00"),
+             ("2021-01-01T00:00:00", "2022-01-01T00:00:00")],
+        )
+        self.assertEqual([f.n_granules for f in stack.frames], [1, 0, 1])
+
 
 @unittest.skipIf(importlib.util.find_spec("xarray") is None, "xarray is not installed")
 class BlockMeanToTheCellCeilingTests(unittest.TestCase):
