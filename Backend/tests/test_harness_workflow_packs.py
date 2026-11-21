@@ -24,6 +24,7 @@ ORDERS: dict[str, tuple[str, ...]] = {
     ),
     "smoke-map": ("extent", "figure"),
     "period-comparison": ("first_data", "second_data", "first_mean", "second_mean", "diff", "figure", "stat"),
+    "satellite-vs-monitor": ("find", "data", "readings", "pair", "figure_series", "monitor_values", "figure_map"),
 }
 CONNECTORS: dict[str, frozenset[str]] = {
     "map": frozenset({"earthdata"}),
@@ -32,6 +33,7 @@ CONNECTORS: dict[str, frozenset[str]] = {
     "monitor-readings": frozenset({"epa_aqs"}),
     "smoke-map": frozenset(),
     "period-comparison": frozenset({"earthdata"}),
+    "satellite-vs-monitor": frozenset({"earthdata", "epa_aqs"}),
 }
 
 # What each capability a spec reads sets, read from the capability code. A name under
@@ -72,6 +74,12 @@ FIELDS: dict[str, dict[str, frozenset[str]]] = {
             "area_exceeding_threshold", "products",
         }),
         "values": frozenset({"period_a", "period_b", "paired_percent"}),
+    },
+    "operations.pair_with_monitors": {
+        "summary": frozenset({
+            "monitors", "monitors_paired", "monitors_without_pairs", "paired_days", "pairs", "pooled_r", "per_monitor",
+        }),
+        "values": frozenset({"pairing", "ground_unit", "pollutant", "situation"}),
     },
     "operations.vertical_profile": {
         "summary": frozenset({"layers", "vertical_dim", "axes", "default_axis", "layer_order", "timesteps", "aggregation"}),
@@ -168,7 +176,7 @@ def result_reads(spec: WorkflowSpec) -> list[tuple[str, str, tuple[str, ...]]]:
 
 
 class PackLoadTests(unittest.TestCase):
-    def test_exactly_the_six_workflows_load(self):
+    def test_exactly_the_shipped_workflows_load(self):
         expected = [(name, version) for name in sorted(ORDERS) for version in range(1, LATEST[name] + 1)]
         self.assertEqual([(s.name, s.version) for s in CATALOGUE], expected)
 
@@ -256,13 +264,17 @@ class ProductTests(unittest.TestCase):
         spec = CATALOGUE.get("period-comparison", 1)
         self.assertEqual(spec.dependencies("second_data"), {"first_data"})
 
+    def test_the_monitor_comparison_is_limited_to_the_no2_products_and_asks_for_daily_values(self):
+        self.assertEqual(self.approved("satellite-vs-monitor", "data"), ["TEMPO_NO2", "TROPOMI_NO2", "OMI_NO2"])
+        self.assertEqual(CATALOGUE.get("satellite-vs-monitor", 1).step("data").with_["cadence"], "daily")
+
     def test_comparison_takes_the_second_period_minus_the_first(self):
         spec = CATALOGUE.get("period-comparison", 1)
         with_ = {key: (node.name if isinstance(node, Ref) else None) for key, node in spec.compiled("diff").with_.items}
         self.assertEqual((with_["a"], with_["b"]), ("first_mean", "second_mean"))
 
     def test_each_satellite_workflow_takes_an_optional_named_product(self):
-        for name in ("map", "timeseries", "vertical-profile", "period-comparison"):
+        for name in ("map", "timeseries", "vertical-profile", "period-comparison", "satellite-vs-monitor"):
             declared = CATALOGUE.get(name, 1).inputs["named"]
             self.assertEqual(declared.type, "text", name)
             self.assertTrue(declared.optional, name)

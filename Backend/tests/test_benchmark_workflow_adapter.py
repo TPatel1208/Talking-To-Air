@@ -13,7 +13,7 @@ import unittest
 from datetime import date, timedelta
 from pathlib import Path
 
-from benchmark.cases import BenchmarkCase, build_cases
+from benchmark.cases import DAILY_UNAVAILABLE_PATTERN, BenchmarkCase, build_cases
 from benchmark.checks import Completed
 
 REQUIRED_MODULES = ["langchain_mcp_adapters", "fastmcp", "uvicorn", "xarray", "zarr", "pyarrow", "langgraph"]
@@ -26,6 +26,8 @@ PLACES = {
     "plotting_point_timeseries": "Newark, NJ",
     "failure_recovery_no_data": "Death Valley",
     "comparison_period_tempo_no2": "New Jersey",
+    "ground_validation_tempo_vs_epa": "Newark NJ",
+    "e2e_cross_source_ground_vs_satellite": "Newark NJ",
     "e2e_ground_relative_date": "Newark, New Jersey",
     "e2e_satellite_plot": "New Jersey",
     "e2e_routing_ozone_otc_satellite_only": "the OTC",
@@ -43,6 +45,8 @@ EXPECTED: dict[str, tuple[str, bool | None, str]] = {
     "plotting_point_timeseries": ("timeseries", True, None),
     "failure_recovery_no_data": ("map", True, ""),
     "comparison_period_tempo_no2": ("period-comparison", True, ""),
+    "ground_validation_tempo_vs_epa": ("satellite-vs-monitor", True, ""),
+    "e2e_cross_source_ground_vs_satellite": ("satellite-vs-monitor", True, None),
     "e2e_ground_relative_date": ("monitor-readings", True, ""),
     "e2e_satellite_plot": ("map", True, ""),
     "e2e_routing_ozone_otc_satellite_only": ("map", True, ""),
@@ -233,6 +237,28 @@ class WorkflowAdapterRunTests(unittest.TestCase):
         self.assertEqual(len(outcome.artifact_ids), 1)
         self.assertEqual(outcome.handles, ["obs_map_1"])
         self.assertEqual(outcome.tool_calls[-1], "render.map")
+
+    def test_the_ground_validation_pairs_the_monitor_s_cell_with_its_readings_from_one_retrieval(self):
+        outcome = self.results["ground_validation_tempo_vs_epa"].outcome
+
+        self.assertEqual(outcome.mode, "Draft workflow: satellite-vs-monitor v1")
+        self.assertEqual([call.tool for call in outcome.boundary_calls].count("retrieve_subset"), 1)
+        self.assertNotIn("retrieve_timeseries", [call.tool for call in outcome.boundary_calls])
+        self.assertIn("operations.pair_with_monitors", outcome.tool_calls)
+        findings = {f["name"]: f["value"] for f in outcome.findings}
+        # The monitor's cell reads 1 to 7 on the days it has readings of 2 to 14; every other cell reads 10.
+        self.assertEqual((findings["paired_days"], findings["pairs"], findings["monitors_paired"]), (7, 7, 1))
+        self.assertAlmostEqual(findings["correlation_r"], 1.0)
+        self.assertIn("agreement in pattern over time, not in level", outcome.answer_text)
+        self.assertEqual(len(outcome.charts), 1)
+        self.assertEqual(len(outcome.artifact_ids), 2)
+
+    def test_the_cross_source_case_refuses_daily_pairs_from_the_monthly_tropomi_product(self):
+        outcome = self.results["e2e_cross_source_ground_vs_satellite"].outcome
+
+        self.assertNotIn("TEMPO", outcome.answer_text)
+        self.assertRegex(outcome.answer_text, DAILY_UNAVAILABLE_PATTERN)
+        self.assertNotIn("correlation_r", {f["name"] for f in outcome.findings})
 
     def test_a_run_that_ends_without_data_counts_as_completed(self):
         outcome = self.results["failure_recovery_no_data"].outcome

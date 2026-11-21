@@ -14,7 +14,7 @@ from tta_backend.datasets.qa_flags import QA_VERIFIED
 from tta_backend.datasets.registry import load_registry
 from tta_backend.domain.aggregation.aggregation_service import area_weighted_mean
 from tta_backend.harness.capabilities import CapabilityRegistry, invoke
-from tta_backend.harness.capabilities.operations import compare, events, group, reduce
+from tta_backend.harness.capabilities.operations import compare, events, group, pair, reduce
 from tta_backend.harness.capabilities.shapes import series_frame
 from tta_backend.harness.capabilities.sources import areas
 from tta_backend.harness.handles import Descriptor, HandleRecord, ServicePayload
@@ -604,7 +604,7 @@ class GroupTests(unittest.TestCase):
     def test_every_module_shares_the_one_group_and_registers(self):
         registry = CapabilityRegistry()
         registry.add_group(group.GROUP)
-        for module in (reduce, compare, events):
+        for module in (reduce, compare, events, pair):
             self.assertIs(module.GROUP, group.GROUP)
             for capability in module.CAPABILITIES:
                 registry.register(capability)
@@ -614,7 +614,7 @@ class GroupTests(unittest.TestCase):
         self.assertEqual(
             {c.name for c in registry.in_group("operations")},
             {"operations.aggregate_time", "operations.regional_series", "operations.statistic",
-             "operations.difference", "operations.daily_peak", "operations.threshold"},
+             "operations.difference", "operations.daily_peak", "operations.threshold", "operations.pair_with_monitors"},
         )
         self.assertTrue(group.GROUP.notes.strip())
 

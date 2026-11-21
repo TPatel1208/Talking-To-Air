@@ -9,7 +9,7 @@ own tools.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Awaitable, Callable
 
 from benchmark.checks import (
@@ -316,9 +316,27 @@ def _newark_aqs_get(daily_rows: Callable[[dict], list[dict]]):
     return get
 
 
-_week_of_january_aqs_get = _newark_aqs_get(lambda params: [
-    _daily_row(day, mean) for day, mean in [("2024-01-01", 2.0), ("2024-01-02", 4.0), ("2024-01-03", 6.0)]
-])
+def _days_requested(params: dict) -> list[date]:
+    """Every day from the request's bdate to its edate, which AQS reads as YYYYMMDD."""
+    first = datetime.strptime(str(params["bdate"]), "%Y%m%d").date()
+    last = datetime.strptime(str(params["edate"]), "%Y%m%d").date()
+    return [first + timedelta(days=n) for n in range((last - first).days + 1)]
+
+
+def _daily_means_aqs_get(means: dict[str, float]):
+    """An AQS fake serving the Newark monitor's NO2 daily rows for the days of ``means`` the request spans."""
+
+    def rows(params: dict) -> list[dict]:
+        return [_daily_row(day.isoformat(), means[day.isoformat()]) for day in _days_requested(params) if day.isoformat() in means]
+
+    return _newark_aqs_get(rows)
+
+
+_week_of_january_aqs_get = _daily_means_aqs_get({f"2024-01-{day:02d}": 2.0 * day for day in range(1, 8)})
+# A January of daily means that rises and falls with the satellite fake's steady climb, without matching it exactly.
+_january_aqs_get = _daily_means_aqs_get(
+    {f"2024-01-{day:02d}": round(2.0 + day * 0.5 + (day % 3) * 0.4, 1) for day in range(1, 32)}
+)
 _requested_day_aqs_get = _newark_aqs_get(lambda params: [_daily_row(str(params.get("bdate", "")), 5.0)])
 
 
@@ -720,6 +738,11 @@ def build_cases(volume) -> list[BenchmarkCase]:
                 *_covers("retrieve_subset", (2024, 1, 1), (2024, 1, 7)),
             ),
             aqs_get=_week_of_january_aqs_get,
+            workflow="satellite-vs-monitor",
+            workflow_inputs={
+                "quantity": "no2_tropospheric_column", "area": "Newark NJ", "dates": _dates("2024-01-01", "2024-01-07"),
+                "named": "TEMPO",
+            },
         ),
         # Period comparison: the later period's range names 2026, which selects the second dataset.
         BenchmarkCase(
@@ -786,13 +809,28 @@ def build_cases(volume) -> list[BenchmarkCase]:
                 "over Newark NJ for January 2024."
             ),
             handlers={
-                **_standard_handlers(obs_handle="obs_e2e_cross_tropomi", product="TROPOMI_NO2", units=NO2_FILE_UNITS),
+                **_standard_handlers(
+                    obs_handle="obs_e2e_cross_tropomi", product="TROPOMI_NO2", units=NO2_FILE_UNITS, search_entries=_no2_hits(),
+                ),
                 "retrieve_subset": cross_source_retrieve_subset,
                 "retrieve_timeseries": cross_source_point_series,
                 **lifecycle,
             },
             checks=(Completed(), SatelliteSourceUsed(), GroundSourceUsed()),
-            aqs_get=_requested_day_aqs_get,
+            # The only TROPOMI NO2 product is monthly and the workflow pairs by day, so the harness
+            # correctly refuses instead of swapping in another instrument.
+            harness_checks=(
+                Completed(),
+                AnswerMatches(DAILY_UNAVAILABLE_PATTERN, "says daily values are not available"),
+                BoundaryNotCalled("retrieve_subset"),
+                BoundaryNotCalled("retrieve_timeseries"),
+            ),
+            aqs_get=_january_aqs_get,
+            workflow="satellite-vs-monitor",
+            workflow_inputs={
+                "quantity": "no2_tropospheric_column", "area": "Newark NJ", "dates": _dates("2024-01-01", "2024-01-31"),
+                "named": "TROPOMI",
+            },
         ),
         # End to end: routing. Prompts on which a lite model added a ground request nobody asked for.
         BenchmarkCase(

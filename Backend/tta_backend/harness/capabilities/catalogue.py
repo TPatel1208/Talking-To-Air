@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from tta_backend.harness.capabilities import explain
-from tta_backend.harness.capabilities.operations import compare, events, profile, reduce
+from tta_backend.harness.capabilities.operations import compare, events, pair, profile, reduce
 from tta_backend.harness.capabilities.operations import group as operations_group
 from tta_backend.harness.capabilities.registry import CapabilityRegistry
 from tta_backend.harness.capabilities.render import maps, monitor_map, polygon_map, profiles, tables, timeseries
@@ -30,6 +30,7 @@ def build_registry() -> CapabilityRegistry:
         reduce.CAPABILITIES,
         compare.CAPABILITIES,
         events.CAPABILITIES,
+        pair.CAPABILITIES,
         profile.CAPABILITIES,
         maps.CAPABILITIES,
         monitor_map.CAPABILITIES,

@@ -38,6 +38,35 @@ def nearest_cell_dataset(ds: xr.Dataset | None, da: xr.DataArray, lat: float, lo
     return ds.sel(selection, method="nearest") if selection else ds
 
 
+def finite_series(series: xr.DataArray) -> tuple[list[str], list[float]]:
+    """ISO times and values of a masked single-cell series; untimed and non-finite values are left out.
+
+    An untimed reading cannot be paired with a ground day.
+    """
+    raw_values = np.atleast_1d(series.values)
+    raw_times = np.atleast_1d(series["time"].values) if "time" in series.coords else [None] * raw_values.size
+    times, values = [], []
+    for t, v in zip(raw_times, raw_values, strict=True):
+        if not np.isfinite(v) or t is None:
+            continue
+        times.append(pd.Timestamp(t).isoformat())
+        values.append(float(v))
+    return times, values
+
+
+def within_grid(da: xr.DataArray, lat: float, lon: float) -> bool:
+    """Whether (lat, lon) lies inside the grid's footprint, half a cell past its outermost cell centres.
+
+    A point outside would otherwise take the nearest edge cell as its own.
+    """
+    for name, value in ((find_lat_coord(da), lat), (find_lon_coord(da), lon)):
+        centres = np.sort(np.asarray(da[name].values, dtype=float))
+        half = float(np.median(np.diff(centres))) / 2 if centres.size > 1 else 0.0
+        if not centres[0] - half <= value <= centres[-1] + half:
+            return False
+    return True
+
+
 def extract_monitor_series(
     da: xr.DataArray, lat: float, lon: float, col_info: dict[str, Any] | None = None,
     source_ds: xr.Dataset | None = None,
@@ -56,16 +85,7 @@ def extract_monitor_series(
     )
 
     n_total = series.sizes.get("time", 1)
-    raw_values = np.atleast_1d(series.values)
-    raw_times = np.atleast_1d(series["time"].values) if "time" in series.coords else [None] * n_total
-
-    times, values = [], []
-    for t, v in zip(raw_times, raw_values, strict=True):
-        # An untimed reading cannot be paired with a ground day.
-        if not np.isfinite(v) or t is None:
-            continue
-        times.append(pd.Timestamp(t).isoformat())
-        values.append(float(v))
+    times, values = finite_series(series)
 
     n_valid = len(values)
     coverage = {
