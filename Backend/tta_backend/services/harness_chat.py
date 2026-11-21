@@ -29,7 +29,11 @@ Frames, in order:
   that run's ``run_id`` and ``mode`` ``{kind, label, workflow}``, in the
   transcript and the history too;
 - ``done`` ``{thread_id, response, artifacts, tool_calls, results, label,
-  suggested_followups?, variable_choice?}``; each of ``results`` is
+  suggested_followups?, variable_choice?, question?}``. ``question`` is the
+  question a paused run waits on, ``{run_id, step, kind, question,
+  options|items}``, which the app answers with ``answer: {run_id, step,
+  value}`` on its next message; ``variable_choice`` is the picker's view of
+  a question with options, carrying the same fields beside its own. Each of ``results`` is
   ``{run_id, status, mode, reason, connector}``, ``connector`` naming the
   connector a result stopped for when it is missing, expired or rejected.
   Work refused because a connector's service is down adds an entry with
@@ -100,6 +104,8 @@ from tta_backend.harness.run_context import (
 from tta_backend.harness.storage import Stores
 from tta_backend.harness.supervisor import Supervisor, Turn
 from tta_backend.harness.supervisor.answer import data_sources, unavailable_wording
+from tta_backend.harness.supervisor.supervisor import AppAnswer
+from tta_backend.harness.workflows.answers import answerable
 from tta_backend.harness.trace import FailureCategory, RunNotFound, TraceStore
 from tta_backend.harness.workflows.loader import WorkflowCatalogue
 from tta_backend.harness.workflows.runner import EnvFactory, connect_reason
@@ -618,10 +624,13 @@ def _option_text(option: Any) -> str:
 
 def picker_payload(variable_choice: dict[str, Any]) -> dict[str, Any]:
     """A turn's question with options in the variable picker's shape. Picking
-    an option sends its text as the user's reply."""
-    options = [_option_text(option) for option in variable_choice.get("options") or []]
+    an option sends its text as the user's reply. The question's own fields
+    (``step``, ``kind``, ``question``, ``options``) go beside, for a control
+    that answers the run directly."""
+    raw = list(variable_choice.get("options") or [])
+    options = [_option_text(option) for option in raw]
     prompt = variable_choice.get("prompt")
-    return {
+    payload: dict[str, Any] = {
         "message": prompt if isinstance(prompt, str) else "",
         "run_id": variable_choice.get("run_id"),
         "candidates": [
@@ -630,6 +639,31 @@ def picker_payload(variable_choice: dict[str, Any]) -> dict[str, Any]:
             for text in options
         ],
     }
+    for name in ("step", "kind", "question"):
+        if name in variable_choice:
+            payload[name] = variable_choice[name]
+    if "step" in variable_choice:
+        payload["options"] = raw
+    return payload
+
+
+# The fields of a question a paused run waits on that the app is sent.
+QUESTION_FIELDS = ("run_id", "step", "kind", "question", "options", "items")
+
+
+def question_payload(question: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The question a paused run waits on, as the ``done`` frame carries it; None for any other."""
+    if question is None or not answerable(question):
+        return None
+    return {name: question[name] for name in QUESTION_FIELDS if name in question}
+
+
+def app_answer(answer: Any) -> AppAnswer | None:
+    """An answer the chat request carried, as the supervisor takes it."""
+    if answer is None or isinstance(answer, AppAnswer):
+        return answer
+    data = answer if isinstance(answer, dict) else answer.model_dump()
+    return AppAnswer(run_id=str(data["run_id"]), step=str(data["step"]), value=data.get("value"))
 
 
 # The chat service
@@ -637,7 +671,8 @@ def picker_payload(variable_choice: dict[str, Any]) -> dict[str, Any]:
 
 class TurnSupervisor(Protocol):
     async def turn(
-        self, context: RunContext, build_env: EnvFactory, earthdata: EarthdataSession, message: str
+        self, context: RunContext, build_env: EnvFactory, earthdata: EarthdataSession, message: str,
+        answer: AppAnswer | None = None,
     ) -> Turn: ...
 
 
@@ -686,20 +721,22 @@ class HarnessChat:
         self._connectors = StoppedConnectors(capabilities, catalogue)
 
     async def stream_chat_events(
-        self, message: str, thread_id: str, user_id: str, request_id: str
+        self, message: str, thread_id: str, user_id: str, request_id: str, answer: Any = None,
     ) -> AsyncIterator[str]:
+        """One turn's frames. ``answer`` is the request's ``{run_id, step, value}`` from the app's
+        question control; ``message`` then holds the picked option's text, which the transcript keeps."""
         # The earthdata tools read the user from this context. No cube write
         # may start while a turn runs: it would compete with the turn for
         # dask, the HDF5 lock and memory.
         # Closed with this stream, so a reader going away reaches the turn's own handling at once.
-        frames = aclosing(self._turn_frames(message, thread_id, user_id, request_id))
+        frames = aclosing(self._turn_frames(message, thread_id, user_id, request_id, app_answer(answer)))
         with user_id_context(user_id), cube_cache.active_turn():
             async with frames as turn_frames:
                 async for frame in turn_frames:
                     yield frame
 
     async def _turn_frames(
-        self, message: str, thread_id: str, user_id: str, request_id: str
+        self, message: str, thread_id: str, user_id: str, request_id: str, answered: AppAnswer | None = None,
     ) -> AsyncGenerator[str, None]:
         started = time.monotonic()
         queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
@@ -727,8 +764,12 @@ class HarnessChat:
             # Whatever ends the turn, one terminal item reaches the queue, so the frame loop never waits on a turn
             # that is over.
             outcome: tuple[str, Any] = ("__error__", RuntimeError("the turn ended without an outcome"))
+            # Passed only when given, so a supervisor that takes no answers still serves plain messages.
+            extra: dict[str, Any] = {} if answered is None else {"answer": answered}
             try:
-                outcome = ("__turn__", await self.supervisor.turn(context, ports.build_env, ports.earthdata, message))
+                outcome = ("__turn__", await self.supervisor.turn(
+                    context, ports.build_env, ports.earthdata, message, **extra,
+                ))
             except BaseException as exc:
                 outcome = ("__error__", exc)
                 if not isinstance(exc, Exception | asyncio.CancelledError):
@@ -895,6 +936,9 @@ class HarnessChat:
             payload["suggested_followups"] = list(turn.followups)
         if turn.variable_choice is not None:
             payload["variable_choice"] = picker_payload(turn.variable_choice)
+        question = question_payload(turn.question)
+        if question is not None:
+            payload["question"] = question
         return payload
 
     async def _record(
@@ -1074,6 +1118,7 @@ __all__ = [
     "earthdata_ready",
     "job_progress",
     "picker_payload",
+    "question_payload",
     "result_summaries",
     "results_view",
     "run_bound_open",

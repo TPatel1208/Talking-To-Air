@@ -13,8 +13,8 @@ Derived facts the compiler and runner use:
   ``after``; order follows references, not position in the file.
 - ``always_runs(step_id)``: no ``when``, ``required``, and depending only on
   steps that always run.
-- ``runnable`` / ``not_runnable_reason``: ``for_each`` and the ``ask`` and
-  ``workflow`` kinds are parsed and checked but the runner refuses them.
+- ``runnable`` / ``not_runnable_reason``: ``for_each`` and the ``workflow``
+  kind are parsed and checked but the runner refuses them.
 - ``approved_for(step_id)``: the products the runner passes as ``approved``.
 - ``connectors(capabilities)`` and ``mode()``.
 
@@ -943,9 +943,8 @@ class WorkflowSpec(_Model):
     def not_runnable_reason(self) -> str | None:
         """Why the runner refuses this spec, naming the first step that uses an unsupported feature."""
         for step in self.steps:
-            if step.kind in ("ask", "workflow"):
-                article = "a" if step.kind == "workflow" else "an"
-                return f"step {step.id} is {article} {step.kind} step, which the runner does not run"
+            if step.kind == "workflow":
+                return f"step {step.id} is a workflow step, which the runner does not run"
             if step.for_each is not None:
                 return f"step {step.id} uses for_each, which the runner does not run"
         return None

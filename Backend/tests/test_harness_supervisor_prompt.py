@@ -13,7 +13,7 @@ from tta_backend.harness.workflows.loader import load_packs
 PACKS = Path(__file__).resolve().parent.parent / "packs"
 CAPABILITIES = build_registry()
 CATALOGUE = load_packs(PACKS, CAPABILITIES, load_registry())
-TOOLS = ("run_workflow", "resume_run", "explore", "resolve_area", "search_datasets", "check_availability")
+TOOLS = ("run_workflow", "resume_run", "cancel_run", "explore", "resolve_area", "search_datasets", "check_availability")
 MAX_RULES_CHARS = 4000
 DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
@@ -74,7 +74,7 @@ class SupervisorPromptTests(unittest.TestCase):
     def test_contains_the_index(self) -> None:
         self.assertIn(self.index, self.prompt)
 
-    def test_names_the_six_tools(self) -> None:
+    def test_names_the_seven_tools(self) -> None:
         for tool in TOOLS:
             self.assertIn(tool, self.prompt)
 

@@ -212,10 +212,14 @@ class Call(Generic[P]):
         if contains_secret(values, self._secret):
             raise failures.failure(failures.SECRET_IN_OUTPUT, name=self.capability.name)
 
-    def ask(self, prompt: str, options: Iterable[JsonValue], *, many: bool = False) -> CapabilityResult:
+    def ask(
+        self, prompt: str, options: Iterable[JsonValue], *, many: bool = False, param: str | None = None
+    ) -> CapabilityResult:
         """A ``needs_input`` result offering ``options``, for example the
-        candidates of a variable or dimension the source needs chosen."""
-        return needs_choice(prompt, options, many=many)
+        candidates of a variable or dimension the source needs chosen. With
+        ``param``, a workflow step answered by the user runs again with the
+        answer as that parameter."""
+        return needs_choice(prompt, options, many=many, param=param)
 
     def done(self, record: HandleRecord | None = None, **fields: Any) -> CapabilityResult:
         """A ``done`` result for ``record``, taking its unit and product from the descriptor."""

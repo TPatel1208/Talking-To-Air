@@ -285,18 +285,23 @@ class RunnerFactsTests(unittest.TestCase):
         self.assertTrue(parsed.runnable)
         self.assertIsNone(parsed.not_runnable_reason)
 
+    def test_an_ask_step_is_runnable(self):
+        pick = {"id": "pick", "ask": {"kind": "pick_one", "question": "Which?", "options": ["a", "b"]}}
+        parsed = spec(steps=[*BASE["steps"], pick])
+        self.assertTrue(parsed.runnable)
+        self.assertIsNone(parsed.not_runnable_reason)
+
     def test_not_runnable_names_the_first_step_and_feature(self):
         say = {"id": "say", "agent": {"instruction": "Say.", "reads": ["$data.summary"], "returns": {"text": "string"}}}
+        pick = {"id": "pick", "ask": {"kind": "pick_one", "question": "Which?", "options": ["a", "b"]}}
         cases: list[tuple[dict[str, Any], str]] = [
-            ({"id": "pick", "ask": {"kind": "pick_one", "question": "Which?", "options": ["a", "b"]}},
-             "step pick is an ask step, which the runner does not run"),
             ({"id": "child", "workflow": "map", "version": 1, "with": {"area": "$area"}},
              "step child is a workflow step, which the runner does not run"),
             (step(id="each", for_each="$data.values.days"), "step each uses for_each, which the runner does not run"),
         ]
         for entry, reason in cases:
             with self.subTest(reason=reason):
-                parsed = spec(steps=[*BASE["steps"], say, entry, step(id="later", for_each="$data.values.days")])
+                parsed = spec(steps=[*BASE["steps"], say, pick, entry, step(id="later", for_each="$data.values.days")])
                 self.assertFalse(parsed.runnable)
                 self.assertEqual(parsed.not_runnable_reason, reason)
 

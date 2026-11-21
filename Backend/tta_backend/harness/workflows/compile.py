@@ -11,6 +11,12 @@ references it read and the notes it was given; its result is the answer, the
 model that gave it and the usage counts. The answer is the step's result in
 state, which later steps read as ``$step.field``.
 
+An ``ask`` step's node resolves its options or items, records a ``waiting``
+``ask`` entry and pauses on a question (see ``answers`` for the payload). The
+runner resumes it with the checked answer as the interrupt's resume value;
+the node then records a ``done`` ``ask`` entry holding the answer, which is
+the step's result: ``$step`` reads it whole and ``$step.0`` by index.
+
 State holds handles and small JSON only (see ``WorkflowState``). The run's
 environment, retry settings and what a resumed node needs travel in the
 graph's context (``StepContext``), never in state.
@@ -26,7 +32,14 @@ writes complete in.
 
 Pauses are LangGraph interrupts whose value says why (``PAUSE_*``):
 
-- ``question``: the capability came back with a question for the user;
+- ``question``: an ``ask`` step, or a capability that came back with a
+  question whose answer code knows how to pass back to it. The interrupt
+  value carries the question payload and, for a capability, the rule that
+  applies the answer; on resume the runner adds the checked ``answer``. The
+  node runs again with the answer as a parameter, recorded first as an
+  ``ask`` entry, and keeps it in state under ``answers`` for the step's
+  later nodes. A capability question with no such rule ends the run as
+  ``needs_input`` with the question, as a place that does not resolve does;
 - ``job``: a two-phase job was still running when ``complete`` stopped waiting;
 - ``retry``: a transient failure outlasted the bounded retries;
 - ``save``: a job submitted again inside the complete node, held in the
@@ -79,6 +92,15 @@ from tta_backend.harness.trace import (
     serialize_json,
 )
 from tta_backend.harness.workflows.agent import MAX_READ_BYTES, MAX_READS_BYTES, ask_model, build_prompt, json_size
+from tta_backend.harness.workflows.answers import (
+    MAX_ITEMS,
+    MAX_OPTIONS,
+    AnswerRejected,
+    apply_rule,
+    capability_rule,
+    check_answer,
+    question_payload,
+)
 from tta_backend.harness.workflows.expressions import (
     EvaluationError,
     MissingValue,
@@ -89,7 +111,7 @@ from tta_backend.harness.workflows.expressions import (
     render_template,
 )
 from tta_backend.harness.workflows.loader import approved_parameter
-from tta_backend.harness.workflows.spec import AgentStep, StopStep, UseStep, WorkflowSpec
+from tta_backend.harness.workflows.spec import AgentStep, AskStep, StopStep, UseStep, WorkflowSpec
 
 APPROVED = "approved"
 BEGIN_SUFFIX = ".begin"
@@ -111,10 +133,19 @@ CANCELLED: Literal["cancelled"] = "cancelled"
 CANCELLED_REASON = "The run was cancelled."
 INSUFFICIENT = "insufficient_evidence"
 STOPPED = "stopped"
+NEEDS_INPUT = "needs_input"
 # What an agent entry records in place of an answer too large for the trace.
 ANSWER_NOT_RECORDED = "not recorded: larger than the trace holds"
 # An agent step's run failing outside its model calls.
 AGENT_INTERNAL = "Step {step} hit an internal error while asking its model."
+# An answer that stops its step: ``narrow`` to a retrieval's size question.
+ANSWER_STOPPED = (
+    "The retrieval for step {step} was not confirmed, so the run stopped; "
+    "run the workflow again over a smaller area or fewer dates."
+)
+NOTHING_OFFERED = "Step {step} has no {what} to offer the user."
+NOT_A_LIST = "Step {step} offers {what} that are not a list."
+TOO_MANY_OFFERED = "Step {step} offers more than {limit} {what}."
 # A step that reads one of these is skipped.
 NOT_PRODUCED = frozenset({SKIPPED, FAILED_OPTIONAL})
 
@@ -136,8 +167,8 @@ class WorkflowState(TypedDict, total=False):
     """A run's graph state; plain JSON only.
 
     ``outcomes`` maps a step id to its outcome: ``status`` (one of the
-    statuses above), ``kind`` (use, agent or stop), the ``result`` (the
-    recorded capability result, or an agent step's answer), the ``method``
+    statuses above), ``kind`` (use, ask, agent or stop), the ``result`` (the
+    recorded capability result, or an ask or agent step's answer), the ``method``
     sentence, and ``reason`` and ``category`` for a step that did not finish. ``end`` is set by the step that ended the run
     early: ``status``, ``reason``, ``step``, ``category`` and the step's
     ``rank`` in the file; when siblings both end it, the earlier step stands.
@@ -152,6 +183,8 @@ class WorkflowState(TypedDict, total=False):
     input_names: dict[str, str]
     outcomes: Annotated[dict[str, dict[str, Any]], _merge]
     jobs: Annotated[dict[str, dict[str, Any]], _merge]
+    # The parameters a user's answer to a capability's question set, by step.
+    answers: Annotated[dict[str, dict[str, Any]], _merge]
     attempts: Annotated[dict[str, int], _merge]
     gaps: Annotated[list[dict[str, str]], operator.add]
     end: Annotated[dict[str, Any] | None, _first]
@@ -288,6 +321,19 @@ class AnswerView:
         return self.answer
 
 
+class AskView:
+    """An ask step's answer as a reference reads it; a bare ``$step`` is the whole answer."""
+
+    def __init__(self, answer: Any) -> None:
+        self.answer = answer
+
+    def read(self, path: str) -> Any:
+        return walk_path(self.answer, path)
+
+    def value(self) -> Any:
+        return self.answer
+
+
 class StateScope:
     """The run's inputs, finished steps and limits, for evaluating a spec's expressions.
 
@@ -300,21 +346,26 @@ class StateScope:
         self._inputs: Mapping[str, Any] = state.get("inputs") or {}
         self._names: Mapping[str, str] = (state.get("input_names") or {}) if text else {}
         self._outcomes: Mapping[str, Mapping[str, Any]] = state.get("outcomes") or {}
-        self._views: dict[str, ResultView | AnswerView | None] = {}
+        self._views: dict[str, ResultView | AnswerView | AskView | None] = {}
 
     def input(self, name: str) -> Any:
         if name in self._names:
             return self._names[name]
         return self._inputs[name]
 
-    def step(self, step_id: str) -> ResultView | AnswerView | None:
+    def step(self, step_id: str) -> ResultView | AnswerView | AskView | None:
         if step_id not in self._views:
             outcome = self._outcomes.get(step_id) or {}
             recorded = outcome.get("result") if outcome.get("status") == DONE else None
-            view: ResultView | AnswerView | None = None
+            view: ResultView | AnswerView | AskView | None = None
             if recorded is not None:
-                agent = outcome.get("kind") == "agent"
-                view = AnswerView(recorded) if agent else ResultView(CapabilityResult.model_validate(recorded))
+                kind = outcome.get("kind")
+                if kind == "ask":
+                    view = AskView(recorded)
+                elif kind == "agent":
+                    view = AnswerView(recorded)
+                else:
+                    view = ResultView(CapabilityResult.model_validate(recorded))
             self._views[step_id] = view
         return self._views[step_id]
 
@@ -359,7 +410,10 @@ class _StepNodes:
             self.capability = capabilities.get(self.step.use)
             self.approved = approved_parameter(spec, step_id, capabilities)
         self.entry_kind: EntryKind = (
-            "stop" if isinstance(self.step, StopStep) else "agent" if isinstance(self.step, AgentStep) else "use"
+            "stop" if isinstance(self.step, StopStep)
+            else "agent" if isinstance(self.step, AgentStep)
+            else "ask" if isinstance(self.step, AskStep)
+            else "use"
         )
         self.rank = spec.step_ids.index(step_id)
         # The steps it reads, which skip it when they were skipped. A pure
@@ -421,7 +475,47 @@ class _StepNodes:
         params: dict[str, Any] = evaluate_value(self.compiled.with_, StateScope(self.spec, state))
         if self.approved is not None:
             params[APPROVED] = self.approved
+        answered: Mapping[str, Mapping[str, Any]] = state.get("answers") or {}
+        params.update(answered.get(self.id) or {})
         return params
+
+    # Answers to a capability's question
+
+    async def _take_answer(
+        self, env: RunEnv, resumed: Mapping[str, Any] | None
+    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        """The parameters the user's answers set for this node, and the update
+        that ends the step when an answer stops it.
+
+        Answers applied before a later pause in the node come back with that
+        pause as ``answered``. A question resumed with its answer is recorded
+        as an ``ask`` entry before the step runs again.
+        """
+        if resumed is None:
+            return {}, None
+        earlier = resumed.get("answered")
+        answered: dict[str, Any] = dict(earlier) if isinstance(earlier, Mapping) else {}
+        rule = resumed.get("rule")
+        if resumed.get("kind") != PAUSE_QUESTION or "answer" not in resumed or not isinstance(rule, Mapping):
+            return answered, None
+        answer = resumed["answer"]
+        applied = apply_rule(rule, answer)
+        question: Mapping[str, Any] = resumed.get("question") or {}
+        entry = {"kind": question.get("kind"), "question": question.get("question")}
+        async with env.recorder.step(kind="ask", capability=self.capability_name, params=entry, step=self.id) as scope:
+            scope.result = _recorded_ask({"answer": answer, "applied": applied})
+        if applied is None:
+            reason = ANSWER_STOPPED.format(step=self.id)
+            outcome = {"status": STOPPED, "kind": "use", "reason": reason}
+            return answered, {"outcomes": {self.id: outcome}, "end": self._end(CANCELLED, reason, None)}
+        answered.update(applied)
+        return answered, None
+
+    def _keep(self, update: dict[str, Any], answered: Mapping[str, Any]) -> dict[str, Any]:
+        """``update`` keeping the parameters answers set, for the step's later nodes."""
+        if answered:
+            update["answers"] = {self.id: dict(answered)}
+        return update
 
     # Outcomes
 
@@ -452,13 +546,37 @@ class _StepNodes:
             return result.method
 
     def _settle(
-        self, env: RunEnv, state: Mapping[str, Any], result: CapabilityResult, attempt: int, node: str
+        self,
+        env: RunEnv,
+        state: Mapping[str, Any],
+        result: CapabilityResult,
+        attempt: int,
+        node: str,
+        *,
+        answered: Mapping[str, Any] | None = None,
+        held: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
+        """The step's update for a capability's result. A question pauses the
+        node, carrying ``held`` (what the node needs to continue) and the
+        answers already applied; one whose answer code cannot pass back ends the run."""
         if result.status == "needs_input":
             assert result.question is not None
-            question = result.question.model_dump(mode="json")
-            env.context.events.question({"run_id": env.run_id, "step": self.id, "question": question})
-            _pause({"kind": PAUSE_QUESTION, "node": node, "step": self.id, "question": question})
+            asked = result.question
+            rule = capability_rule(self._cap(), asked)
+            if rule is None:
+                outcome: dict[str, Any] = {
+                    "status": NEEDS_INPUT, "kind": "use", "result": result.recorded(), "reason": asked.prompt,
+                }
+                end = {**self._end(NEEDS_INPUT, asked.prompt, None), "question": asked.model_dump(mode="json")}
+                return {"outcomes": {self.id: outcome}, "attempts": {self.id: attempt}, "end": end}
+            payload = question_payload(
+                env.run_id, self.id, asked.kind, asked.prompt, options=asked.options, items=asked.items,
+            )
+            env.context.events.question({"run_id": env.run_id, "step": self.id, "question": payload})
+            _pause({
+                "kind": PAUSE_QUESTION, "node": node, "step": self.id, "question": payload, "rule": rule,
+                "attempt": attempt, **(held or {}), **_answered(answered),
+            })
         if result.status == "done":
             outcome = {"status": DONE, "kind": "use", "result": result.recorded(), "method": self._method(state, result)}
             return {"outcomes": {self.id: outcome}, "attempts": {self.id: attempt}}
@@ -501,8 +619,8 @@ class _StepNodes:
         await self._record(env, status=FAILED, failure=failure)
         return self._failed(failure)
 
-    def _retry_pause(self, node: str, attempt: int) -> NoReturn:
-        _pause({"kind": PAUSE_RETRY, "node": node, "step": self.id, "attempt": attempt})
+    def _retry_pause(self, node: str, attempt: int, answered: Mapping[str, Any]) -> NoReturn:
+        _pause({"kind": PAUSE_RETRY, "node": node, "step": self.id, "attempt": attempt, **_answered(answered)})
 
     # Nodes
 
@@ -557,6 +675,10 @@ class _StepNodes:
         """An ``agent`` step."""
         return await self._node(self.id, state, runtime, self._agent)
 
+    async def ask(self, state: WorkflowState, runtime: Runtime[StepContext]) -> dict[str, Any]:
+        """An ``ask`` step."""
+        return await self._node(self.id, state, runtime, self._ask)
+
     async def _run(self, state: WorkflowState, context: StepContext) -> dict[str, Any]:
         """A one-phase ``use`` step."""
         env = context.env
@@ -567,21 +689,26 @@ class _StepNodes:
             params = self._params(state)
         except EvaluationError as error:
             return await self._evaluation_failure(env, error)
-        attempt = self._start_attempt(state, context.resumed.get(self.id))
+        resumed = context.resumed.get(self.id)
+        answered, stopped = await self._take_answer(env, resumed)
+        if stopped is not None:
+            return stopped
+        params.update(answered)
+        attempt = self._start_attempt(state, resumed)
         tries = 0
         while True:
             try:
                 result = await invoke(env, self._cap(), params, step=self.id, attempt=attempt)
             except StepFailure as failure:
                 if not self._transient(failure):
-                    return self._failed(failure)
+                    return self._keep(self._failed(failure), answered)
                 if tries >= context.retry.retries:
-                    self._retry_pause(self.id, attempt + 1)
+                    self._retry_pause(self.id, attempt + 1, answered)
                 tries += 1
                 await context.retry.sleep(context.retry.backoff(tries))
                 attempt += 1
                 continue
-            return self._settle(env, state, result, attempt, self.id)
+            return self._keep(self._settle(env, state, result, attempt, self.id, answered=answered), answered)
 
     async def _begin(self, state: WorkflowState, context: StepContext) -> dict[str, Any]:
         """A two-phase step's first node: submit, and save the job reference."""
@@ -594,26 +721,31 @@ class _StepNodes:
             params = self._params(state)
         except EvaluationError as error:
             return await self._evaluation_failure(env, error)
-        attempt = self._start_attempt(state, context.resumed.get(node))
+        resumed = context.resumed.get(node)
+        answered, stopped = await self._take_answer(env, resumed)
+        if stopped is not None:
+            return stopped
+        params.update(answered)
+        attempt = self._start_attempt(state, resumed)
         tries = 0
         while True:
             # An attempt is one submission, numbered from 0.
             if attempt >= context.retry.max_submissions:
-                return await self._too_many(env, attempt)
+                return self._keep(await self._too_many(env, attempt), answered)
             try:
                 job = await begin(env, self._cap(), params, step=self.id, attempt=attempt)
             except StepFailure as failure:
                 if not self._transient(failure):
-                    return self._failed(failure)
+                    return self._keep(self._failed(failure), answered)
                 if tries >= context.retry.retries:
-                    self._retry_pause(node, attempt + 1)
+                    self._retry_pause(node, attempt + 1, answered)
                 tries += 1
                 await context.retry.sleep(context.retry.backoff(tries))
                 attempt += 1
                 continue
             if isinstance(job, CapabilityResult):
-                return self._settle(env, state, job, attempt, node)
-            return {"jobs": {self.id: job}, "attempts": {self.id: attempt}}
+                return self._keep(self._settle(env, state, job, attempt, node, answered=answered), answered)
+            return self._keep({"jobs": {self.id: job}, "attempts": {self.id: attempt}}, answered)
 
     async def _complete(self, state: WorkflowState, context: StepContext) -> dict[str, Any]:
         """A two-phase step's second node: finish from the saved job.
@@ -635,10 +767,15 @@ class _StepNodes:
         except EvaluationError as error:
             return await self._evaluation_failure(env, error)
         resumed = context.resumed.get(self.id)
+        answered, stopped = await self._take_answer(env, resumed)
+        if stopped is not None:
+            return stopped
+        params.update(answered)
+        carry = _answered(answered)
         jobs: Mapping[str, JobRef] = state.get("jobs") or {}
         job: JobRef | None = jobs.get(self.id)
         attempt = self._start_attempt(state, resumed)
-        if resumed is not None and resumed.get("kind") in (PAUSE_JOB, PAUSE_RETRY, PAUSE_SAVE):
+        if resumed is not None and resumed.get("kind") in (PAUSE_JOB, PAUSE_RETRY, PAUSE_SAVE, PAUSE_QUESTION):
             saved = resumed.get("job")
             job = dict(saved) if isinstance(saved, dict) else None
         # A save point continues the same round of retries; a resume starts a new one.
@@ -646,22 +783,24 @@ class _StepNodes:
         while True:
             if job is None:
                 if attempt >= context.retry.max_submissions:
-                    return await self._too_many(env, attempt)
+                    return self._keep(await self._too_many(env, attempt), answered)
                 try:
                     got = await begin(env, self._cap(), params, step=self.id, attempt=attempt)
                 except StepFailure as failure:
                     if not self._transient(failure):
-                        return self._failed(failure)
+                        return self._keep(self._failed(failure), answered)
                     if tries >= context.retry.retries:
-                        self._retry_pause(self.id, attempt + 1)
+                        self._retry_pause(self.id, attempt + 1, answered)
                     tries += 1
                     await context.retry.sleep(context.retry.backoff(tries))
                     attempt += 1
                     continue
                 if isinstance(got, CapabilityResult):
-                    return self._settle(env, state, got, attempt, self.id)
+                    settled = self._settle(env, state, got, attempt, self.id, answered=answered, held={"job": None})
+                    return self._keep(settled, answered)
                 _pause({
                     "kind": PAUSE_SAVE, "node": self.id, "step": self.id, "job": got, "attempt": attempt, "tries": tries,
+                    **carry,
                 })
             try:
                 result = await complete(env, self._cap(), params, job, step=self.id)
@@ -673,24 +812,27 @@ class _StepNodes:
                     "job": job,
                     "attempt": attempt,
                     "still_running": list(running.still_running),
+                    **carry,
                 })
             except StepFailure as failure:
                 dead = isinstance(failure, JobFailed)
                 if not (dead and self._cap().retry_safe) and not self._transient(failure):
-                    return self._failed(failure)
+                    return self._keep(self._failed(failure), answered)
                 if tries >= context.retry.retries:
                     if dead:
-                        self._retry_pause(self.id, attempt + 1)
-                    _pause({"kind": PAUSE_RETRY, "node": self.id, "step": self.id, "job": job, "attempt": attempt})
+                        self._retry_pause(self.id, attempt + 1, answered)
+                    _pause({
+                        "kind": PAUSE_RETRY, "node": self.id, "step": self.id, "job": job, "attempt": attempt, **carry,
+                    })
                 tries += 1
                 await context.retry.sleep(context.retry.backoff(tries))
                 if dead:
                     attempt += 1
                     job = None
                 continue
-            update = self._settle(env, state, result, attempt, self.id)
+            update = self._settle(env, state, result, attempt, self.id, answered=answered, held={"job": job})
             update["jobs"] = {self.id: job}
-            return update
+            return self._keep(update, answered)
 
     async def _stop(self, state: WorkflowState, context: StepContext) -> dict[str, Any]:
         """A ``stop`` step: ends the run with its status and reason when its condition holds."""
@@ -759,6 +901,47 @@ class _StepNodes:
         outcome = {"status": DONE, "kind": "agent", "result": answer, "method": self._agent_method(state)}
         return {"outcomes": {self.id: outcome}}
 
+    async def _ask(self, state: WorkflowState, context: StepContext) -> dict[str, Any]:
+        """An ``ask`` step: puts its question to the user and takes the checked answer as its result.
+
+        The first run records a ``waiting`` entry and pauses. Resumed with an
+        answer, it records a ``done`` entry holding the answer; resumed
+        without one, as when the user answered another question of the run,
+        it pauses again.
+        """
+        env = context.env
+        gated = await self._gate(state, env)
+        if gated is not None:
+            return gated
+        assert isinstance(self.step, AskStep)
+        ask = self.step.ask
+        picks = ask.kind in ("pick_one", "pick_many")
+        node = self.compiled.options if picks else self.compiled.items
+        try:
+            offered = [] if node is None else evaluate_value(node, StateScope(self.spec, state))
+        except EvaluationError as error:
+            return await self._evaluation_failure(env, error)
+        problem = None if ask.kind == "text" else _offer_problem(self.id, "options" if picks else "items", offered)
+        if problem is not None:
+            await self._record(env, status=FAILED, failure=problem)
+            return self._failed(problem)
+        listed = list(offered or ())
+        payload = question_payload(
+            env.run_id, self.id, ask.kind, ask.question,
+            options=listed if picks else (), items=() if picks else listed,
+        )
+        entry = {"kind": ask.kind, "question": ask.question}
+        if context.resumed.get(self.id) is None:
+            async with env.recorder.step(kind="ask", params=entry, step=self.id) as scope:
+                scope.status = "waiting"
+                scope.result = None if ask.kind == "text" else {"offered": len(listed)}
+            env.context.events.question({"run_id": env.run_id, "step": self.id, "question": payload})
+        answer = _await_answer({"kind": PAUSE_QUESTION, "node": self.id, "step": self.id, "question": payload}, payload)
+        async with env.recorder.step(kind="ask", params=entry, step=self.id) as scope:
+            scope.result = _recorded_ask({"answer": answer})
+        outcome = {"status": DONE, "kind": "ask", "result": answer, "method": self._agent_method(state)}
+        return {"outcomes": {self.id: outcome}}
+
     async def _notes(self, env: RunEnv, state: Mapping[str, Any], catalogue: NoteCatalogue | None) -> tuple[Note, ...]:
         """The notes for the datasets and quantities behind what the step reads:
         the handles of the steps and inputs it reads, and any quantity input it reads."""
@@ -805,6 +988,46 @@ class _StepNodes:
             return render_template(self.compiled.method, StateScope(self.spec, state, text=True))
         except (EvaluationError, ValueError):
             return None
+
+
+def _answered(answered: Mapping[str, Any] | None) -> dict[str, Any]:
+    """What a pause carries of the answers already applied in its node."""
+    return {"answered": dict(answered)} if answered else {}
+
+
+def _await_answer(value: dict[str, Any], question: Mapping[str, Any]) -> Any:
+    """The checked answer an ask step's pause is resumed with. A resume
+    without one, or with one that does not fit, pauses again."""
+    while True:
+        got = interrupt(value)
+        if isinstance(got, Mapping) and "answer" in got:
+            try:
+                return check_answer(question, got["answer"])
+            except AnswerRejected:
+                continue
+
+
+def _offer_problem(step_id: str, what: str, offered: Any) -> StepFailure | None:
+    """Why an ask step cannot put what it resolved to the user; None when it can."""
+    if not isinstance(offered, list | tuple):
+        return StepFailure(FailureCategory.INTERNAL_ERROR, NOT_A_LIST.format(step=step_id, what=what))
+    if not offered:
+        return StepFailure(FailureCategory.NO_DATA, NOTHING_OFFERED.format(step=step_id, what=what))
+    limit = MAX_OPTIONS if what == "options" else MAX_ITEMS
+    if len(offered) > limit:
+        return StepFailure(
+            FailureCategory.INTERNAL_ERROR, TOO_MANY_OFFERED.format(step=step_id, limit=limit, what=what),
+        )
+    return None
+
+
+def _recorded_ask(result: dict[str, Any]) -> dict[str, Any]:
+    """An ask entry's result: the answer when it fits the trace, else a marker."""
+    try:
+        serialize_json(result, "result")
+    except InvalidTrace:
+        return {**result, "answer": ANSWER_NOT_RECORDED}
+    return result
 
 
 def _oversized_reads(step_id: str, reads: list[tuple[str, Any]]) -> StepFailure | None:
@@ -886,6 +1109,8 @@ def compile_workflow(
             builder.add_node(step_id, nodes.stop)
         elif isinstance(nodes.step, AgentStep):
             builder.add_node(step_id, nodes.agent)
+        elif isinstance(nodes.step, AskStep):
+            builder.add_node(step_id, nodes.ask)
         elif nodes._cap().two_phase:
             builder.add_node(step_id + BEGIN_SUFFIX, nodes.begin)
             builder.add_node(step_id, nodes.complete)

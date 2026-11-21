@@ -618,6 +618,9 @@ def _check_plain_value(report: _Report, step_id: str, key: str, node: Value, cap
     for ref in references(node):
         if not isinstance(ref, Ref) or not ref.bare:
             continue
+        if ref.root == "step" and isinstance(spec.step(ref.name), AskStep):
+            # An ask step's result is the user's answer, a value.
+            continue
         if ref.root == "step":
             report.add(
                 f"with.{key} takes a value, not a handle; read a field of step {ref.name}, like ${ref.name}.summary",

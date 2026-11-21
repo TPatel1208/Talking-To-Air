@@ -2,6 +2,7 @@
 import asyncio
 import copy
 import dataclasses
+import datetime
 import json
 import tempfile
 import unittest
@@ -23,6 +24,7 @@ from tta_backend.harness.capabilities import (
     Group,
     JobStillRunning,
     Params,
+    Question,
     handle_param,
     needs_choice,
 )
@@ -44,10 +46,13 @@ from tta_backend.harness.testing import (
     env_factory,
     make_run_context,
 )
-from tta_backend.harness.trace import FailureCategory, RunNotFound, StepFailure
+from tta_backend.harness.trace import FailureCategory, Run, RunNotFound, StepFailure, new_run_id
 from tta_backend.harness.workflows import (
-    AnswerNotSupported,
+    AnswerRequired,
+    BadAnswer,
+    NotAsking,
     compile_workflow,
+    expire_paused,
     NotRunnable,
     RetrySettings,
     RunNotResumable,
@@ -56,7 +61,19 @@ from tta_backend.harness.workflows import (
 from tta_backend.harness.workflows.loader import UnknownWorkflow, WorkflowCatalogue, load_specs
 from tta_backend.harness.workflows import compile as compile_module
 from tta_backend.harness.workflows import runner as runner_module
-from tta_backend.harness.workflows.runner import INTERNAL_REASON, JOB_WAITING, SOURCE_WAITING
+from tta_backend.harness.workflows.compile import ANSWER_STOPPED, CANCELLED_REASON
+from tta_backend.harness.workflows.runner import (
+    ANSWER_REQUIRED,
+    EXPIRED_REASON,
+    INTERNAL_REASON,
+    JOB_WAITING,
+    NOT_ASKING_DATA,
+    NOT_ASKING_DONE,
+    NOT_ASKING_INPUTS,
+    NOT_ASKING_STEP,
+    QUESTION_REASON,
+    SOURCE_WAITING,
+)
 
 DATASETS = load_registry()
 SECRET = "fakeconn-secret-value-9c41"
@@ -102,10 +119,21 @@ class MakeParams(Params):
     quantity: str | None = None
     approved: list[str] | Literal["registry_default"] | None = None
     product: str | None = None
+    days: list[str] | None = None
 
 
 class LabelParams(Params):
     label: str
+
+
+class LevelParams(Params):
+    label: str
+    level: str | None = None
+
+
+class SizeParams(Params):
+    label: str
+    confirmed: bool = False
 
 
 class FailParams(Params):
@@ -139,8 +167,27 @@ def fake_registry(script: Script) -> CapabilityRegistry:
         record = await call.mint("scalar", ScalarInput(value=1.0), Descriptor(summary=f"Met {call.params.label}"))
         return call.done(record, summary={"value": 1.0})
 
-    async def ask(call: Call[LabelParams]) -> CapabilityResult:
+    async def ask(call: Call[LevelParams]) -> CapabilityResult:
+        script.calls.append(("ops.ask", dict(call.recorded)))
+        if call.params.level is None:
+            return needs_choice("Which level should be used?", ["surface", "column"], param="level")
+        return CapabilityResult(status="done", values={"level": call.params.level})
+
+    async def ask_blind(call: Call[LabelParams]) -> CapabilityResult:
         return needs_choice("Which level should be used?", ["surface", "column"])
+
+    async def size(call: Call[SizeParams]) -> CapabilityResult:
+        script.calls.append(("ops.size", dict(call.recorded)))
+        if not call.params.confirmed:
+            return CapabilityResult(status="needs_input", question=Question(
+                kind="pick_one", prompt="The retrieval is large. Confirm to go ahead, or narrow it.",
+                options=("confirm", "narrow"),
+            ))
+        record = await call.mint("scalar", ScalarInput(value=1.0), Descriptor(summary="Sized"))
+        return call.done(record, summary={"value": 1.0})
+
+    async def days(call: Call[LabelParams]) -> CapabilityResult:
+        return CapabilityResult(status="done", values={"days": ["2024-06-01", "2024-06-02", "2024-06-03"]})
 
     async def empty(call: Call[LabelParams]) -> CapabilityResult:
         return CapabilityResult(status="insufficient_evidence", reason="The fake step found nothing valid.")
@@ -195,7 +242,10 @@ def fake_registry(script: Script) -> CapabilityRegistry:
                                  method="{label} was made as {summary.value}."))
     registry.register(capability("ops.meet", LabelParams, output_kind="scalar", run=meet))
     registry.register(capability("ops.hold", LabelParams, output_kind="scalar", run=hold))
-    registry.register(capability("ops.ask", LabelParams, output_kind=None, run=ask))
+    registry.register(capability("ops.ask", LevelParams, output_kind=None, run=ask))
+    registry.register(capability("ops.ask_blind", LabelParams, output_kind=None, run=ask_blind))
+    registry.register(capability("ops.size", SizeParams, output_kind="scalar", run=size))
+    registry.register(capability("ops.days", LabelParams, output_kind=None, run=days))
     registry.register(capability("ops.empty", LabelParams, output_kind=None, run=empty))
     registry.register(capability("ops.fail", FailParams, output_kind=None, run=fail))
     registry.register(dataclasses.replace(capability("ops.fail_unsafe", FailParams, output_kind=None, run=fail), retry_safe=False))
@@ -634,24 +684,311 @@ class ProductTests(RunnerCase):
         self.assertTrue((result.reason or "").startswith("Input quantity must be a quantity"))
 
 
-class QuestionTests(RunnerCase):
-    async def test_a_capability_question_pauses_the_run_and_resume_is_refused(self):
+def ask_step(step_id: str, kind: str, question: str, **extra: Any) -> dict[str, Any]:
+    keep = {k: extra.pop(k) for k in ("when", "after", "required", "method", "label") if k in extra}
+    return {"id": step_id, "ask": {"kind": kind, "question": question, **extra}, **keep}
+
+
+DAYS = {"id": "candidates", "use": "ops.days", "with": {"label": "days"}}
+ASKING: dict[str, dict[str, Any]] = {
+    "pick_one": spec(
+        [make("base"), ask_step("choose", "pick_one", "Which label?", options=["$base.values.label", "other"]),
+         make("after", product="$choose")],
+        {"data": ["$after"]}, inputs={},
+    ),
+    "pick_many": spec(
+        [ask_step("choose", "pick_many", "Which labels?", options=["a", "b", "c"]),
+         make("after", product="$choose.0", days="$choose")],
+        {"data": ["$after"]}, inputs={},
+    ),
+    "confirm_list": spec(
+        [DAYS, ask_step("choose", "confirm_list", "Use these days?", items="$candidates.days"),
+         make("after", days="$choose")],
+        {"data": ["$after"]}, inputs={},
+    ),
+    "text": spec(
+        [ask_step("choose", "text", "Any label?"), make("after", product="$choose")],
+        {"data": ["$after"]}, inputs={},
+    ),
+}
+# A valid answer to each kind, what later steps then see, and answers each refuses.
+ANSWERS: dict[str, tuple[Any, dict[str, Any], list[Any]]] = {
+    "pick_one": (" OTHER ", {"product": "other"}, ["nothing", ["base"], 3]),
+    "pick_many": (["c", "a"], {"product": "c", "days": ["c", "a"]}, [[], ["a", "a"], ["d"]]),
+    "confirm_list": (
+        ["2024-06-03", "2024-06-05", "2024-06-03"], {"days": ["2024-06-03", "2024-06-05"]},
+        [[], ["June 3"], "2024-06-03", [3]],
+    ),
+    "text": ("  my label  ", {"product": "my label"}, ["", "   ", 5, "x" * 1001, ["a"]]),
+}
+OFFERED = {
+    "pick_one": ("options", ["base", "other"]),
+    "pick_many": ("options", ["a", "b", "c"]),
+    "confirm_list": ("items", ["2024-06-01", "2024-06-02", "2024-06-03"]),
+    "text": (None, None),
+}
+
+
+class AskStepTests(RunnerCase):
+    async def test_each_kind_pauses_with_its_question_and_resumes_with_a_checked_answer(self):
+        for kind, raw in ASKING.items():
+            with self.subTest(kind=kind):
+                self.script.calls.clear()
+                f = self.fixture(raw)
+                f.events.questions.clear()
+                paused = await f.start({})
+                run = paused.trace_id
+                self.assertEqual((paused.status, paused.reason), ("needs_input", QUESTION_REASON.format(step="choose")))
+                expected = {"run_id": run, "step": "choose", "kind": kind,
+                            "question": raw["steps"][-2]["ask"]["question"], "prompt": raw["steps"][-2]["ask"]["question"]}
+                field, offered = OFFERED[kind]
+                if field is not None:
+                    expected[field] = offered
+                self.assertEqual(paused.question, expected)
+                [event] = f.events.questions
+                self.assertEqual(event, {"run_id": run, "step": "choose", "question": expected})
+                self.assertEqual((await f.entries(run))[-1], ("ask", None, "choose", "waiting"))
+                self.assertEqual(await f.run_status(run), "needs_input")
+                self.assertEqual(await f.stores.results.get("user-a", run), paused)
+
+                answer, seen, refused = ANSWERS[kind]
+                before = await f.entries(run)
+                for bad in refused:
+                    with self.assertRaises(BadAnswer) as caught:
+                        await f.runner.resume(await f.env(run), bad)
+                    self.assertTrue(caught.exception.reason.startswith("The answer must be"), caught.exception.reason)
+                    self.assertEqual(caught.exception.step, "choose")
+                self.assertEqual(await f.entries(run), before)
+                self.assertEqual(await f.run_status(run), "needs_input")
+
+                done = await f.new_runner().resume(await f.env(run), answer)
+                self.assertEqual(done.status, "done", done.reason)
+                self.assertEqual(await f.run_status(run), "done")
+                (_, made), = [c for c in self.script.calls if c[0] == "ops.make" and c[1].get("label") == "after"]
+                for name, value in seen.items():
+                    self.assertEqual(made[name], value)
+                recorded = await f.stores.traces.entries("user-a", run)
+                [answered] = [e for e in recorded if e.kind == "ask" and e.status == "done"]
+                self.assertEqual(answered.step, "choose")
+                self.assertEqual(answered.params, {"kind": kind, "question": expected["question"]})
+                checked = answered.result["answer"]
+                self.assertEqual(checked, seen.get("days", seen.get("product")) if kind != "pick_many" else ["c", "a"])
+                with self.assertRaises(NotAsking):
+                    await f.runner.resume(await f.env(run), answer)
+
+    async def test_an_ask_whose_when_is_false_is_skipped_and_its_readers_too(self):
         f = self.fixture(spec(
-            [make("base"), {"id": "choose", "use": "ops.ask", "with": {"label": "choose"}}],
+            [make("base"), ask_step("choose", "text", "Any label?", when='$mode == "ask"'),
+             make("after", product="$choose")],
             {"data": ["$base"]},
+            inputs={"mode": {"type": "choice", "options": ["ask", "skip"], "default": "skip"}},
+        ))
+        result = await f.start({})
+        self.assertEqual(result.status, "done", result.reason)
+        self.assertEqual([e[2:] for e in await f.entries(result.trace_id)], [
+            ("base", "done"), ("choose", "skipped"), ("after", "skipped"),
+        ])
+
+    async def test_an_ask_with_nothing_to_offer_fails_its_step(self):
+        f = self.fixture(spec(
+            [make("base"), ask_step("choose", "pick_one", "Which?", options="$base.values.label")],
+            {"data": ["$base"]}, inputs={},
+        ))
+        result = await f.start({})
+        self.assertEqual((result.status, result.reason), ("failed", "Step choose offers options that are not a list."))
+
+    async def test_a_resume_needs_the_answer_for_the_step_it_waits_on(self):
+        f = self.fixture(ASKING["text"])
+        paused = await f.start({})
+        env = await f.env(paused.trace_id)
+        with self.assertRaises(AnswerRequired) as required:
+            await f.runner.resume(env)
+        self.assertEqual(required.exception.reason, ANSWER_REQUIRED.format(run_id=paused.trace_id, step="choose"))
+        with self.assertRaises(NotAsking) as other:
+            await f.runner.resume(env, "label", step="after")
+        self.assertEqual(other.exception.reason,
+                         NOT_ASKING_STEP.format(run_id=paused.trace_id, step="after", asked="choose"))
+        done = await f.runner.resume(env, "label", step="choose")
+        self.assertEqual(done.status, "done", done.reason)
+        with self.assertRaises(NotAsking) as finished:
+            await f.runner.resume(env, "label")
+        self.assertEqual(finished.exception.reason, NOT_ASKING_DONE.format(run_id=paused.trace_id, status="done"))
+
+    async def test_two_questions_at_once_are_answered_one_at_a_time_in_file_order(self):
+        f = self.fixture(spec(
+            [ask_step("first", "text", "First?"), ask_step("second", "text", "Second?"),
+             make("after", product="$first", days=["$second"])],
+            {"data": ["$after"]}, inputs={},
+        ))
+        paused = await f.start({})
+        assert paused.question is not None
+        self.assertEqual(paused.question["step"], "first")
+        again = await f.runner.resume(await f.env(paused.trace_id), "one")
+        self.assertEqual(again.status, "needs_input")
+        assert again.question is not None
+        self.assertEqual(again.question["step"], "second")
+        done = await f.runner.resume(await f.env(paused.trace_id), "two")
+        self.assertEqual(done.status, "done", done.reason)
+        [(_, made)] = self.script.calls
+        self.assertEqual((made["product"], made["days"]), ("one", ["two"]))
+        # The second question was asked once: resuming it without its answer did not record it again.
+        waiting = [e for e in await f.entries(paused.trace_id) if e[0] == "ask" and e[3] == "waiting"]
+        self.assertEqual(sorted(e[2] for e in waiting), ["first", "second"])
+
+    async def test_a_run_paused_on_a_job_and_a_question_waits_on_the_question_then_on_the_job(self):
+        f = self.fixture(spec(
+            [{"id": "get", "use": "sources.fake.fetch", "with": {"label": "get"}},
+             ask_step("choose", "pick_one", "Which?", options=["x", "y"]),
+             make("after", a="$get", product="$choose")],
+            {"data": ["$after"]}, inputs={},
+        ))
+        self.script.statuses["job_1"] = ["running"]
+        paused = await f.start({})
+        self.assertEqual(paused.status, "needs_input")
+        with self.assertRaises(NotAsking):
+            await f.runner.resume(await f.env(paused.trace_id), "nothing", step="get")
+        waiting = await f.runner.resume(await f.env(paused.trace_id), "y")
+        self.assertEqual((waiting.status, waiting.reason), ("waiting", JOB_WAITING.format(step="get")))
+        with self.assertRaises(NotAsking) as data:
+            await f.runner.resume(await f.env(paused.trace_id), "x")
+        self.assertEqual(data.exception.reason, NOT_ASKING_DATA.format(run_id=paused.trace_id))
+        done = await f.new_runner().resume(await f.env(paused.trace_id))
+        self.assertEqual(done.status, "done", done.reason)
+        self.assertEqual(self.script.submissions(), 1)
+        [(_, made)] = self.script.calls
+        self.assertEqual(made["product"], "y")
+
+
+class CapabilityQuestionTests(RunnerCase):
+    async def test_a_capability_question_pauses_and_its_answer_runs_the_step_again_with_it(self):
+        f = self.fixture(spec(
+            [make("base"), {"id": "choose", "use": "ops.ask", "with": {"label": "choose"}},
+             make("after", product="$choose.values.level")],
+            {"data": ["$after"]},
             inputs={},
         ))
         result = await f.start({})
         self.assertEqual(result.status, "needs_input")
+        run = result.trace_id
+        self.assertEqual(result.question, {
+            "run_id": run, "step": "choose", "kind": "pick_one", "question": "Which level should be used?",
+            "prompt": "Which level should be used?", "options": ["surface", "column"],
+        })
+        [event] = f.events.questions
+        self.assertEqual((event["run_id"], event["step"], event["question"]), (run, "choose", result.question))
+        self.assertEqual(await f.run_status(run), "needs_input")
+        self.assertEqual((await f.entries(run))[-1], ("use", "ops.ask", "choose", "waiting"))
+        with self.assertRaises(BadAnswer):
+            await f.runner.resume(await f.env(run), "middle")
+
+        done = await f.new_runner().resume(await f.env(run), "Column")
+        self.assertEqual(done.status, "done", done.reason)
+        self.assertEqual((await f.entries(run))[-3:], [
+            ("ask", "ops.ask", "choose", "done"), ("use", "ops.ask", "choose", "done"), ("use", "ops.make", "after", "done"),
+        ])
+        recorded = await f.stores.traces.entries("user-a", run)
+        answered = next(e for e in recorded if e.kind == "ask")
+        self.assertEqual(answered.result, {"answer": "column", "applied": {"level": "column"}})
+        self.assertEqual(recorded[-2].params["level"], "column")
+        self.assertEqual(self.script.calls[-1][1]["product"], "column")
+
+    async def test_a_question_whose_answer_cannot_reach_the_capability_ends_the_run_as_now(self):
+        f = self.fixture(spec(
+            [make("base"), {"id": "choose", "use": "ops.ask_blind", "with": {"label": "choose"}}],
+            {"data": ["$base"]}, inputs={},
+        ))
+        result = await f.start({})
+        self.assertEqual((result.status, result.reason), ("needs_input", "Which level should be used?"))
         assert result.question is not None
         self.assertEqual(result.question["options"], ["surface", "column"])
-        [event] = f.events.questions
-        self.assertEqual((event["run_id"], event["step"], event["question"]), (result.trace_id, "choose", result.question))
+        self.assertNotIn("run_id", result.question)
         self.assertEqual(await f.run_status(result.trace_id), "needs_input")
-        self.assertEqual((await f.entries(result.trace_id))[-1], ("use", "ops.ask", "choose", "waiting"))
-        with self.assertRaises(AnswerNotSupported):
-            await f.runner.resume(await f.env(result.trace_id))
-        self.assertEqual(await f.run_status(result.trace_id), "needs_input")
+        with self.assertRaises(NotAsking) as caught:
+            await f.runner.resume(await f.env(result.trace_id), "surface")
+        self.assertEqual(caught.exception.reason, NOT_ASKING_INPUTS.format(run_id=result.trace_id))
+
+    async def test_a_size_question_is_confirmed_into_the_run_or_narrowing_stops_it(self):
+        sized = spec(
+            [{"id": "big", "use": "ops.size", "with": {"label": "big"}}, make("after", a="$big")],
+            {"data": ["$after"]}, inputs={},
+        )
+        f = self.fixture(sized)
+        first = await f.start({})
+        self.assertEqual(first.status, "needs_input")
+        confirmed = await f.runner.resume(await f.env(first.trace_id), "confirm")
+        self.assertEqual(confirmed.status, "done", confirmed.reason)
+        sizes = [params for name, params in self.script.calls if name == "ops.size"]
+        self.assertEqual([p["confirmed"] for p in sizes], [False, True])
+
+        second = await f.start({})
+        narrowed = await f.runner.resume(await f.env(second.trace_id), "narrow")
+        self.assertEqual((narrowed.status, narrowed.reason), ("cancelled", ANSWER_STOPPED.format(step="big")))
+        self.assertEqual(await f.run_status(second.trace_id), "cancelled")
+        self.assertEqual(len([n for n, _ in self.script.calls if n == "ops.size"]), 3)
+        self.assertEqual((await f.entries(second.trace_id))[-1], ("ask", "ops.size", "big", "done"))
+
+
+class CancelAndExpiryTests(RunnerCase):
+    async def test_a_run_waiting_on_a_question_can_be_cancelled(self):
+        f = self.fixture(ASKING["text"])
+        paused = await f.start({})
+        run = await f.runner.cancel(await f.env(paused.trace_id))
+        self.assertEqual(run.status, "cancelled")
+        saved = await f.stores.results.get("user-a", paused.trace_id)
+        self.assertEqual((saved.status, saved.reason, saved.question), ("cancelled", CANCELLED_REASON, None))
+        with self.assertRaises(NotAsking):
+            await f.runner.resume(await f.env(paused.trace_id), "label")
+
+    async def later(self, f: Fixture, days: float) -> RunContext:
+        return dataclasses.replace(f.context, clock=FixedClock(f.context.clock.now() + datetime.timedelta(days=days)))
+
+    async def test_paused_runs_left_longer_than_the_expiry_are_cancelled_at_the_next_turn(self):
+        f = self.fixture(ASKING["text"])
+        asking = await f.start({})
+        explored = new_run_id()
+        await f.stores.traces.start_run(Run(
+            id=explored, user_id="user-a", conversation_id="conv-1", mode=Mode.exploratory(), started=f.context.clock.now(),
+        ))
+        await f.stores.results.put("user-a", Result(
+            status="needs_input", mode=Mode.exploratory(), trace_id=explored, reason="Which place?",
+            question={"kind": "text", "prompt": "Which place?"},
+        ))
+        await f.stores.traces.finish_run("user-a", explored, "needs_input", f.context.clock.now())
+
+        self.assertEqual(await expire_paused(await self.later(f, 29), f.runner, f.build), ())
+        self.assertEqual(await f.run_status(asking.trace_id), "needs_input")
+
+        expired = await expire_paused(await self.later(f, 31), f.runner, f.build)
+        self.assertEqual(set(expired), {asking.trace_id, explored})
+        for run_id in expired:
+            saved = await f.stores.results.get("user-a", run_id)
+            self.assertEqual((saved.status, saved.reason, saved.question), ("cancelled", EXPIRED_REASON, None))
+            self.assertEqual(await f.run_status(run_id), "cancelled")
+        self.assertEqual(await expire_paused(await self.later(f, 62), f.runner, f.build), ())
+
+    async def test_expiry_counts_from_the_last_pause(self):
+        f = self.fixture(spec(
+            [ask_step("first", "text", "First?"), ask_step("second", "text", "Second?", after=["first"]),
+             make("after", product="$second")],
+            {"data": ["$after"]}, inputs={},
+        ))
+        paused = await f.start({})
+        later = await self.later(f, 20)
+        resumed = await f.runner.resume(await f.build(later, paused.trace_id), "one")
+        self.assertEqual(resumed.status, "needs_input")
+        self.assertEqual(await expire_paused(await self.later(f, 40), f.runner, f.build), ())
+        self.assertEqual(await expire_paused(await self.later(f, 51), f.runner, f.build), (paused.trace_id,))
+
+    async def test_a_waiting_run_expires_too_and_keeps_what_it_reported(self):
+        f = self.fixture(FETCH)
+        self.script.statuses["job_1"] = ["running"]
+        waiting = await f.start({})
+        [run_id] = await expire_paused(await self.later(f, 31), f.runner, f.build)
+        self.assertEqual(run_id, waiting.trace_id)
+        saved = await f.stores.results.get("user-a", run_id)
+        self.assertEqual((saved.status, saved.reason), ("cancelled", EXPIRED_REASON))
+        # Its provider job is left alone: nothing was cancelled at the source.
+        self.assertEqual([tool for tool, _ in self.script.earthdata.calls], ["submit"])
 
 
 class WaitingTests(RunnerCase):
@@ -810,12 +1147,12 @@ class RefusalTests(RunnerCase):
 
     async def test_a_spec_the_runner_does_not_run_is_refused(self):
         f = self.fixture(spec(
-            [make("base"), {"id": "confirm", "ask": {"kind": "text", "question": "Go on?"}}],
+            [make("base"), {**make("each"), "for_each": "$base.values.label"}],
             {"data": ["$base"]}, inputs={},
         ))
         with self.assertRaises(NotRunnable) as caught:
             await f.start({})
-        self.assertEqual(caught.exception.reason, "step confirm is an ask step, which the runner does not run")
+        self.assertEqual(caught.exception.reason, "step each uses for_each, which the runner does not run")
         self.assertEqual(await f.stores.traces.list_runs("user-a", "conv-1"), [])
 
     async def test_a_finished_run_cannot_be_resumed_or_cancelled(self):
@@ -1123,6 +1460,36 @@ class FixtureWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.disclosures[0].startswith("Product: TEMPO_NO2"))
         steps = await self.f.runner.steps(await self.f.env(result.trace_id))
         self.assertTrue((steps[0].method or "").startswith("TEMPO_NO2 was retrieved over New Jersey"))
+
+    async def test_a_large_retrieval_is_confirmed_into_the_paused_run(self):
+        self.service.estimated_bytes = 100_000_000
+        inputs = {"quantity": NO2, "area": "New Jersey", "dates": {"start": "2024-06-01", "end": "2024-06-03"}}
+        paused = await self.f.start(inputs, name="map")
+        self.assertEqual(paused.status, "needs_input")
+        assert paused.question is not None
+        self.assertEqual(
+            (paused.question["run_id"], paused.question["step"], paused.question["kind"], paused.question["options"]),
+            (paused.trace_id, "data", "pick_one", ["confirm", "narrow"]),
+        )
+        self.assertEqual(len(self.service.jobs), 0)
+
+        done = await self.f.new_runner().resume(await self.f.env(paused.trace_id), "confirm")
+        self.assertEqual(done.status, "done", done.reason)
+        self.assertEqual(len(self.service.jobs), 1)
+        get = "sources.satellite.get_data"
+        self.assertEqual(await self.f.entries(paused.trace_id), [
+            AREA_ENTRY,
+            ("use", get, "data", "waiting"),
+            ("ask", get, "data", "done"),
+            ("use", get, "data", "waiting"),
+            ("use", get, "data", "done"),
+            ("use", "render.map", "figure", "done"),
+        ])
+        entries = await self.f.stores.traces.entries("user-a", paused.trace_id)
+        self.assertEqual(entries[2].result, {"answer": "confirm", "applied": {"confirmed": True}})
+        self.assertIs(entries[3].params["confirmed"], True)
+        # The finishing call carries the answer too, so it is in the step's recorded parameters.
+        self.assertIs(entries[4].params["confirmed"], True)
 
     async def test_the_period_comparison_workflow(self):
         result = await self.f.start({

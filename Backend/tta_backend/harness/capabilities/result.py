@@ -5,7 +5,7 @@ import re
 from collections.abc import Iterable
 from typing import Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, SerializerFunctionWrapHandler, model_serializer, model_validator
 
 from tta_backend.harness.handles.model import HandleKind, is_derived_id, is_handle_id
 from tta_backend.harness.trace import MAX_REASON_CHARS, serialize_json
@@ -43,12 +43,25 @@ class _Model(BaseModel):
 
 
 class Question(_Model):
-    """A typed question for the user; pick kinds offer ``options``, confirm_list edits ``items``."""
+    """A typed question for the user; pick kinds offer ``options``, confirm_list edits ``items``.
+
+    ``param`` names the capability parameter the answer is passed as when a
+    workflow step runs again with it, as ``product`` for a product choice.
+    It is left out of the dump when unset.
+    """
 
     kind: QuestionKind
     prompt: str = Field(min_length=1, max_length=500)
     options: tuple[JsonValue, ...] = ()
     items: tuple[JsonValue, ...] = ()
+    param: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_]*$")
+
+    @model_serializer(mode="wrap")
+    def _without_unset_param(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        data: dict[str, Any] = handler(self)
+        if self.param is None:
+            data.pop("param", None)
+        return data
 
     @model_validator(mode="after")
     def _shape(self) -> Self:
@@ -115,7 +128,10 @@ class CapabilityResult(_Model):
         return walk_path(data, path)
 
 
-def needs_choice(prompt: str, options: Iterable[JsonValue], *, many: bool = False) -> CapabilityResult:
-    """A ``needs_input`` result asking the user to pick one of ``options``, or several when ``many``."""
-    question = Question(kind="pick_many" if many else "pick_one", prompt=prompt, options=tuple(options))
+def needs_choice(
+    prompt: str, options: Iterable[JsonValue], *, many: bool = False, param: str | None = None
+) -> CapabilityResult:
+    """A ``needs_input`` result asking the user to pick one of ``options``, or several when ``many``.
+    ``param`` is the parameter a workflow step passes the answer as when it runs again."""
+    question = Question(kind="pick_many" if many else "pick_one", prompt=prompt, options=tuple(options), param=param)
     return CapabilityResult(status="needs_input", question=question)

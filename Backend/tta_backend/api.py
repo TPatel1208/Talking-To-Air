@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.security.utils import get_authorization_scheme_param
-from pydantic import BaseModel, Field, StringConstraints
+from pydantic import BaseModel, Field, JsonValue, StringConstraints, field_validator
 from redis import asyncio as aioredis
 from redis.exceptions import RedisError
 from starlette.routing import Match
@@ -554,9 +554,33 @@ app.add_middleware(
 )
 
 
+# The largest answer value the question control may send, as JSON text.
+MAX_ANSWER_JSON_CHARS = 20_000
+
+
+class ChatAnswer(BaseModel):
+    """An answer from the app's question control to the question a paused run waits on."""
+
+    run_id: str = Field(pattern=r"^run_[0-9a-f]{32}$")
+    step: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$")
+    value: JsonValue
+
+    @field_validator("value")
+    @classmethod
+    def _bounded(cls, value: JsonValue) -> JsonValue:
+        # No question takes null, and the runner reads a missing answer as none given.
+        if value is None:
+            raise ValueError("the answer has no value")
+        if len(json.dumps(value)) > MAX_ANSWER_JSON_CHARS:
+            raise ValueError(f"the answer is longer than {MAX_ANSWER_JSON_CHARS} characters as JSON")
+        return value
+
+
 class ChatRequest(BaseModel):
+    # With an answer, the picked option's text, which the transcript records as the user's message.
     message: str = Field(min_length=1, max_length=10_000)
     thread_id: Optional[str] = Field(default=None, min_length=1, pattern=r"^[A-Za-z0-9-]+$")
+    answer: Optional[ChatAnswer] = None
 
 
 class DiscoverySearchRequest(BaseModel):
@@ -1595,7 +1619,9 @@ async def chat(req: ChatRequest, request: Request) -> Response:
     request_id = str(uuid.uuid4())
     await _save_session_metadata(thread_id, req.message, user.id, request_id)
     frames = _stamp_activity_on_first_frame(
-        active_agent.stream_chat_events(req.message, thread_id, user.id, request_id),
+        active_agent.stream_chat_events(
+            req.message, thread_id, user.id, request_id, **({} if req.answer is None else {"answer": req.answer}),
+        ),
         thread_id,
         request_id,
     )

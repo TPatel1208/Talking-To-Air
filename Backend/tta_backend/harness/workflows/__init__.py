@@ -9,21 +9,29 @@ from tta_backend.harness.workflows.compile import (
 )
 from tta_backend.harness.workflows.inputs import InputProblem, MissingInput, ResolvedInputs, resolve_inputs
 from tta_backend.harness.workflows.runner import (
-    AnswerNotSupported,
+    AnswerNotTaken,
+    AnswerRequired,
+    BadAnswer,
     EnvFactory,
+    NotAsking,
     NotAWorkflowRun,
     RunNotResumable,
     StepRecord,
     WorkflowRunner,
+    cancel_paused,
+    expire_paused,
 )
 
 __all__ = [
-    "AnswerNotSupported",
+    "AnswerNotTaken",
+    "AnswerRequired",
+    "BadAnswer",
     "CompiledWorkflow",
     "EnvFactory",
     "InputProblem",
     "MissingInput",
     "NotAWorkflowRun",
+    "NotAsking",
     "NotRunnable",
     "ResolvedInputs",
     "RetrySettings",
@@ -32,6 +40,8 @@ __all__ = [
     "StepRecord",
     "WorkflowRunner",
     "WorkflowState",
+    "cancel_paused",
     "compile_workflow",
+    "expire_paused",
     "resolve_inputs",
 ]

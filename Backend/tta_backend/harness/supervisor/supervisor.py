@@ -3,6 +3,13 @@
 A host builds one ``Supervisor`` at startup and calls ``turn`` per message.
 Each turn:
 
+0. cancels the conversation's runs left paused past their expiry and, when
+   the message came with an answer from the app's question control,
+   checks it and resumes its run in code, before any model call. The model
+   then finds the message followed by a ``resume_run`` call that already
+   finished, with its result, so it writes only the prose. An answer that
+   does not fit is answered without a model call: the fixed reason, then the
+   question again;
 1. checks the jobs waiting runs are on and builds the session ledger, rendered once;
 2. runs the agent on the message. Its checkpoint thread is
    ``supervisor/{user}/{conversation}``, so no two users share one. The
@@ -31,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -74,14 +82,23 @@ from tta_backend.harness.supervisor.answer import (
     appended,
     clean_prose,
     data_sources,
+    result_view,
     sources_line,
     unmatched_numbers,
 )
 from tta_backend.harness.supervisor.index import supervisor_index
 from tta_backend.harness.supervisor.prompt import supervisor_prompt
 from tta_backend.harness.supervisor.tools import TurnTools, latest_runnable, tool_schemas
+from tta_backend.harness.trace import RunNotFound
 from tta_backend.harness.workflows.loader import WorkflowCatalogue
-from tta_backend.harness.workflows.runner import EnvFactory, WorkflowRunner
+from tta_backend.harness.workflows.runner import (
+    AnswerNotTaken,
+    BadAnswer,
+    EnvFactory,
+    RunNotResumable,
+    WorkflowRunner,
+    expire_paused,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +114,9 @@ FAILED_WORDING = "The language model could not be reached, so this answer was no
 INTERNAL_WORDING = "The answer stopped on an internal error; what had already run is kept."
 UNFINISHED_CALL = "This call did not finish."
 TOOL_LIMIT = "The limit of {limit} tool calls for this turn is reached, so this call was not run. Answer from what you have."
+# An answer from the app's question control for a question no longer waiting.
+ANSWER_GONE = "That question is no longer waiting for an answer, so nothing was resumed."
+APP_ANSWER_CALL = "resume_run"
 
 # The most follow-ups a turn suggests, after merging its results' in order.
 MAX_FOLLOWUPS = 3
@@ -139,7 +159,8 @@ class Turn:
     unavailable: tuple[str, ...] = ()
     # The first needs_input question, if any.
     question: dict[str, Any] | None
-    # For a question with options: run_id, prompt and options, for the app's picker.
+    # For a question with options: run_id, prompt and options for the app's picker, and the
+    # question's step, kind and text when the run waits on it.
     variable_choice: dict[str, Any] | None
     status: TurnStatus
     model_calls: int
@@ -148,6 +169,42 @@ class Turn:
     output_tokens: int
     cache_read_tokens: int
     cache_creation_tokens: int
+
+
+@dataclass(frozen=True, kw_only=True)
+class AppAnswer:
+    """An answer the app's question control sent with the message: the run and step it answers and the value."""
+
+    run_id: str
+    step: str
+    value: Any
+
+
+def asked_question(results: Sequence[Result]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """The first needs_input question among ``results``, and the picker's view of it when it has options."""
+    asking = next((r for r in results if r.status == "needs_input" and r.question), None)
+    if asking is None or asking.question is None:
+        return None, None
+    question = asking.question
+    options = question.get("options")
+    if not isinstance(options, list) or not options:
+        return question, None
+    choice: dict[str, Any] = {"run_id": asking.trace_id, "prompt": question.get("prompt"), "options": list(options)}
+    for name in ("step", "kind", "question"):
+        if name in question:
+            choice[name] = question[name]
+    return question, choice
+
+
+def answered_call(answer: AppAnswer, result: Result) -> list[AnyMessage]:
+    """The ``resume_run`` call an answer from the app made in code, and its result, as the model sees them."""
+    call_id = f"app_answer_{uuid.uuid4().hex[:16]}"
+    call = {"name": APP_ANSWER_CALL, "args": {"run_id": answer.run_id, "answer": answer.value}, "id": call_id,
+            "type": "tool_call"}
+    return [
+        AIMessage(content="", tool_calls=[call]),
+        ToolMessage(content=result_view(result), tool_call_id=call_id, name=APP_ANSWER_CALL),
+    ]
 
 
 def thread_id(identity: Identity) -> str:
@@ -546,8 +603,27 @@ class Supervisor:
             name=AGENT_NAME,
         )
 
-    async def turn(self, context: RunContext, build_env: EnvFactory, earthdata: EarthdataSession, message: str) -> Turn:
-        """Answer ``message`` in the context's conversation."""
+    async def turn(
+        self,
+        context: RunContext,
+        build_env: EnvFactory,
+        earthdata: EarthdataSession,
+        message: str,
+        answer: AppAnswer | None = None,
+    ) -> Turn:
+        """Answer ``message`` in the context's conversation; ``answer`` is one the app's question
+        control sent with it, which code checks and resumes its run with before any model call."""
+        try:
+            await expire_paused(context, self._runner, build_env)
+        except Exception as exc:
+            # Runs left paused stay listed; the turn goes on.
+            logger.warning("paused runs could not be expired: %s", type(exc).__name__)
+        answered: Result | None = None
+        if answer is not None:
+            resumed = await self._resume_answered(context, build_env, answer)
+            if isinstance(resumed, str):
+                return await self._refused_answer(context, answer, resumed)
+            answered = resumed
         try:
             job_states = await check_waiting(context, earthdata)
         except Exception as exc:
@@ -560,6 +636,10 @@ class Supervisor:
             capabilities=self._capabilities, notes=self._notes, schemas=self._schemas,
             explore_limits=self._explore_limits, backoff=self._backoff, message=message,
         )
+        opening: list[AnyMessage] = [HumanMessage(content=message)]
+        if answer is not None and answered is not None:
+            tools.answered(answered)
+            opening.extend(answered_call(answer, answered))
         user_id = context.identity.user_id
 
         async def sources() -> list[str]:
@@ -578,7 +658,7 @@ class Supervisor:
             else:
                 status, wording, prose = await self._run(
                     self._agent(choice, tools, guard, meter, turn_context(context, ledger)), context, stream, guard,
-                    message,
+                    opening,
                 )
         except asyncio.CancelledError:
             await asyncio.shield(tools.close())
@@ -594,16 +674,15 @@ class Supervisor:
         return self._turn(text, tools, guard, meter, status, lookup)
 
     async def _run(
-        self, agent: Any, context: RunContext, stream: AnswerStream, guard: TurnGuard, message: str
+        self, agent: Any, context: RunContext, stream: AnswerStream, guard: TurnGuard, opening: list[AnyMessage]
     ) -> tuple[TurnStatus, str | None, str]:
-        """How the turn ended, any fixed wording for that, and the final message's prose."""
+        """How the turn ended, any fixed wording for that, and the final message's prose.
+        ``opening`` is the user's message, and the call an answer from the app made, if any."""
         config = self.config(context.identity)
         status: TurnStatus = "answered"
         wording: str | None = None
         try:
-            async for chunk, metadata in agent.astream(
-                {"messages": [HumanMessage(content=message)]}, config, stream_mode="messages",
-            ):
+            async for chunk, metadata in agent.astream({"messages": opening}, config, stream_mode="messages"):
                 if _from_supervisor_model(chunk, metadata):
                     await stream.feed(chunk, metadata)
         except GraphBubbleUp:
@@ -629,6 +708,45 @@ class Supervisor:
             status, wording = "limit", LIMIT_WORDING.format(limit=self._limits.model_calls)
         return status, wording, final.text if final is not None and status != "failed" else ""
 
+    async def _resume_answered(self, context: RunContext, build_env: EnvFactory, answer: AppAnswer) -> Result | str:
+        """The result of resuming ``answer``'s run with it, or the fixed reason it was not resumed."""
+        identity = context.identity
+        try:
+            run = await context.storage.traces.get_run(identity.user_id, answer.run_id)
+            if run.conversation_id != identity.conversation_id:
+                raise RunNotFound(answer.run_id)
+            return await self._runner.resume(await build_env(context, run.id), answer.value, step=answer.step)
+        except BadAnswer as bad:
+            return bad.reason
+        except (AnswerNotTaken, RunNotResumable, RunNotFound):
+            return ANSWER_GONE
+
+    async def _refused_answer(self, context: RunContext, answer: AppAnswer, reason: str) -> Turn:
+        """The turn for an answer from the app that was not taken, written without a model call:
+        the fixed reason, then the question again while its run still waits on it."""
+        identity = context.identity
+        shown: list[Result] = []
+        try:
+            run = await context.storage.traces.get_run(identity.user_id, answer.run_id)
+            saved = await context.storage.results.get(identity.user_id, answer.run_id)
+            if run.conversation_id == identity.conversation_id and run.status == "needs_input" == saved.status:
+                shown.append(saved)
+        except Exception:
+            # Missing, another conversation's, or a store that cannot be read: the reason alone is said.
+            shown = []
+        text = "\n\n".join(part for part in (reason, appended(shown)) if part)
+
+        async def no_sources() -> list[str]:
+            return []
+
+        await AnswerStream(context, no_sources, lambda: False).finish(text)
+        question, variable_choice = asked_question(shown)
+        return Turn(
+            text=text, results=tuple(shown), run_ids=tuple(r.trace_id for r in shown), followups=(),
+            question=question, variable_choice=variable_choice, status="answered", model_calls=0, tool_calls=0,
+            input_tokens=0, output_tokens=0, cache_read_tokens=0, cache_creation_tokens=0,
+        )
+
     async def _record_numbers(self, tools: TurnTools, unmatched: list[str]) -> None:
         """One trace entry on the lookup run naming the prose's unmatched numbers; never blocks the answer."""
         try:
@@ -648,12 +766,7 @@ class Supervisor:
         lookup: Result | None,
     ) -> Turn:
         results = tuple(tools.results)
-        question = next((r.question for r in results if r.status == "needs_input" and r.question), None)
-        asking = next((r for r in results if r.question is question), None) if question else None
-        options = question.get("options") if question else None
-        variable_choice = None
-        if asking is not None and question is not None and isinstance(options, list) and options:
-            variable_choice = {"run_id": asking.trace_id, "prompt": question.get("prompt"), "options": list(options)}
+        question, variable_choice = asked_question(results)
         run_ids = list(tools.run_ids)
         if lookup is not None:
             run_ids.append(lookup.trace_id)

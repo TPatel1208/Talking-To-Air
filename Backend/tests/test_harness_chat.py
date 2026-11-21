@@ -44,7 +44,7 @@ from tta_backend.earthdata_mcp.results import MCPToolError  # noqa: E402
 from tta_backend.harness.results import Mode, Result  # noqa: E402
 from tta_backend.harness.storage import memory_stores  # noqa: E402
 from tta_backend.harness.trace import Run, new_run_id  # noqa: E402
-from tta_backend.harness.supervisor.supervisor import FAILED_WORDING  # noqa: E402
+from tta_backend.harness.supervisor.supervisor import ANSWER_GONE, FAILED_WORDING  # noqa: E402
 from tta_backend.harness.testing import answer, rate_limited  # noqa: E402
 from tta_backend.services import admission, cube_cache  # noqa: E402
 from tta_backend.services.harness_chat import (  # noqa: E402
@@ -56,6 +56,7 @@ from tta_backend.services.harness_chat import (  # noqa: E402
     TurnPorts,
     connector_reachable,
     picker_payload,
+    question_payload,
     result_summaries,
     transcript_history,
 )
@@ -94,10 +95,12 @@ class Collecting:
     def __init__(self, transcripts: MemoryTranscripts) -> None:
         self.transcripts = transcripts
 
-    async def run(self, chat: Any, message: str = "hi", thread_id: str = "thread-1", user_id: str = "user-a") -> list[str]:
+    async def run(
+        self, chat: Any, message: str = "hi", thread_id: str = "thread-1", user_id: str = "user-a", answer: Any = None,
+    ) -> list[str]:
         frames: list[str] = []
         self.transcripts.watch = frames
-        async for frame in chat.stream_chat_events(message, thread_id, user_id, "req-1"):
+        async for frame in chat.stream_chat_events(message, thread_id, user_id, "req-1", answer=answer):
             frames.append(frame)
         return frames
 
@@ -364,6 +367,86 @@ class ScriptedSupervisorTurnTests(SupervisorCase):
         self.assertTrue(choice["message"])
         self.assertEqual([c["name"] for c in choice["candidates"]], ["confirm", "narrow"])
         self.assertEqual([c["prompt"] for c in choice["candidates"]], ["confirm", "narrow"])
+
+    async def test_the_done_frame_carries_the_question_the_run_waits_on_beside_the_picker(self):
+        self.service.estimated_bytes = 100_000_000
+        model = Model(script=[run_map(), answer("The retrieval is large.")])
+        frames = await self.collect.run(self.chat(model), "Map NO2 over New Jersey for June 1 to 3, 2024.")
+
+        done = last(frames, "done")
+        [result] = done["results"]
+        question = done["question"]
+        self.assertEqual(set(question), {"run_id", "step", "kind", "question", "options"})
+        self.assertEqual((question["run_id"], question["step"], question["kind"], question["options"]),
+                         (result["run_id"], "data", "pick_one", ["confirm", "narrow"]))
+        choice = done["variable_choice"]
+        self.assertEqual(choice["message"], question["question"])
+        self.assertEqual((choice["run_id"], choice["step"], choice["kind"], choice["question"], choice["options"]),
+                         (question["run_id"], "data", "pick_one", question["question"], ["confirm", "narrow"]))
+
+    async def test_an_answer_from_the_question_control_resumes_the_run_before_any_model_call(self):
+        self.service.estimated_bytes = 100_000_000
+        statuses: list[str] = []
+
+        def prose(messages: Any) -> Any:
+            # What the model is first shown this turn: the resume already done, in code.
+            from langchain_core.messages import ToolMessage
+            statuses.append(json.loads([m for m in messages if isinstance(m, ToolMessage)][-1].text)["status"])
+            return answer("The map is ready.")
+
+        model = Model(script=[run_map(), answer("The retrieval is large."), prose])
+        chat = self.chat(model)
+        first = last(await self.collect.run(chat, "Map NO2 over New Jersey for June 1 to 3, 2024."), "done")
+        run = first["question"]["run_id"]
+
+        frames = await self.collect.run(chat, "confirm", answer={"run_id": run, "step": "data", "value": "confirm"})
+
+        self.assertEqual(statuses, ["done"])
+        self.assertEqual(model.calls, 3)
+        done = last(frames, "done")
+        [result] = done["results"]
+        self.assertEqual((result["run_id"], result["status"]), (run, "done"))
+        self.assertNotIn("question", done)
+        self.assertIn("The map is ready.", done["response"])
+        second = self.transcripts.turns[1]
+        self.assertEqual((second.user_text, second.status), ("confirm", "done"))
+        self.assertEqual([r.status for r in second.results], ["done"])
+        self.assertTrue(any(name == "chart" for name, _ in parse(frames)))
+
+    async def test_an_answer_naming_a_run_of_another_thread_is_refused_and_resumes_nothing(self):
+        self.service.estimated_bytes = 100_000_000
+        model = Model(script=[run_map(), answer("The retrieval is large.")])
+        chat = self.chat(model)
+        run = last(await self.collect.run(chat, "Map NO2 over New Jersey."), "done")["question"]["run_id"]
+
+        frames = await self.collect.run(
+            chat, "confirm", thread_id="thread-2", answer={"run_id": run, "step": "data", "value": "confirm"},
+        )
+
+        done = last(frames, "done")
+        self.assertEqual(done["response"], ANSWER_GONE)
+        self.assertNotIn("question", done)
+        self.assertEqual(done["results"], [])
+        self.assertEqual(model.calls, 2)
+        self.assertEqual((await self.f.stores.traces.get_run("user-a", run)).status, "needs_input")
+        self.assertEqual(len(self.service.jobs), 0)
+
+    async def test_an_answer_that_does_not_fit_asks_the_question_again_without_the_model(self):
+        self.service.estimated_bytes = 100_000_000
+        model = Model(script=[run_map(), answer("The retrieval is large.")])
+        chat = self.chat(model)
+        run = last(await self.collect.run(chat, "Map NO2 over New Jersey."), "done")["question"]["run_id"]
+
+        frames = await self.collect.run(chat, "later", answer={"run_id": run, "step": "data", "value": "later"})
+
+        self.assertEqual(model.calls, 2)
+        done = last(frames, "done")
+        self.assertTrue(done["response"].startswith("The answer must be exactly one of the options: confirm | narrow."))
+        self.assertEqual(done["question"]["run_id"], run)
+        self.assertEqual(done["variable_choice"]["run_id"], run)
+        self.assertEqual([r["status"] for r in done["results"]], ["needs_input"])
+        self.assertEqual(self.transcripts.turns[1].user_text, "later")
+        self.assertEqual("".join(data["content"] for name, data in parse(frames) if name == "text"), done["response"])
 
     async def test_two_users_on_the_same_thread_id_have_separate_conversations(self):
         model = Model(script=[answer("Hello A."), answer("Hello B.")])
@@ -902,6 +985,21 @@ class StoppedConnectorTests(PackRun):
 
 
 class PickerTests(unittest.TestCase):
+    def test_a_question_a_run_waits_on_keeps_its_fields_beside_the_candidates(self):
+        payload = picker_payload({
+            "run_id": RUN_A, "prompt": "Which product?", "options": ["TEMPO_NO2", {"label": "OMI NO2"}],
+            "step": "pick", "kind": "pick_one", "question": "Which product?",
+        })
+        self.assertEqual([c["name"] for c in payload["candidates"]], ["TEMPO_NO2", "OMI NO2"])
+        self.assertEqual((payload["step"], payload["kind"], payload["question"]), ("pick", "pick_one", "Which product?"))
+        self.assertEqual(payload["options"], ["TEMPO_NO2", {"label": "OMI NO2"}])
+        self.assertEqual(question_payload({
+            "run_id": RUN_A, "step": "days", "kind": "confirm_list", "question": "Days?", "prompt": "Days?",
+            "items": ["2024-06-01"],
+        }), {"run_id": RUN_A, "step": "days", "kind": "confirm_list", "question": "Days?", "items": ["2024-06-01"]})
+        # A question that ended its run, as an input asked for, is not one the app can answer.
+        self.assertIsNone(question_payload({"kind": "inputs", "inputs": [{"name": "area", "ask": "Where?"}]}))
+
     def test_options_become_candidates_the_frontend_picker_reads(self):
         payload = picker_payload({"run_id": RUN_A, "prompt": "Which product?", "options": [
             "TEMPO_NO2", {"label": "OMI NO2", "value": "OMI"}, {"other": 1},
@@ -1097,6 +1195,26 @@ class ChatEndpointUsesTheHarnessTests(unittest.IsolatedAsyncioTestCase):
                             ("get_session_metadata", metadata), ("session_belongs_to_user", owns)):
             self.enterContext(patch.object(api, name, value))
 
+    async def test_an_answer_in_the_chat_request_reaches_the_turn(self):
+        answer = {"run_id": RUN_A, "step": "days", "value": ["2024-06-01", "2024-06-03"]}
+        async with self.httpx.AsyncClient(
+            transport=self.httpx.ASGITransport(app=self.api.app), base_url="http://testserver",
+        ) as client:
+            posted = await client.post("/chat", json={"message": "Use these days", "thread_id": self.thread_id,
+                                                      "answer": answer}, headers=self.headers)
+            self.assertEqual(posted.status_code, 202, posted.text)
+            await asyncio.wait_for(self.registry.wait(posted.json()["turn_id"]), timeout=10.0)
+            for bad in ({**answer, "run_id": "run_1"}, {**answer, "step": "Days"}, {"run_id": RUN_A, "step": "days"},
+                        {**answer, "value": None}):
+                with self.subTest(bad=bad):
+                    refused = await client.post("/chat", json={"message": "x", "thread_id": self.thread_id,
+                                                               "answer": bad}, headers=self.headers)
+                    self.assertEqual(refused.status_code, 422)
+
+        self.assertEqual(self.supervisor.messages, ["Use these days"])
+        [given] = self.supervisor.answers
+        self.assertEqual((given.run_id, given.step, given.value), (RUN_A, "days", ["2024-06-01", "2024-06-03"]))
+
     async def test_a_detached_turn_runs_on_the_harness_and_history_reads_its_transcript(self):
         async with self.httpx.AsyncClient(
             transport=self.httpx.ASGITransport(app=self.api.app), base_url="http://testserver",
@@ -1111,6 +1229,7 @@ class ChatEndpointUsesTheHarnessTests(unittest.IsolatedAsyncioTestCase):
             history = await client.get(f"/session/{self.thread_id}/history", headers=self.headers)
 
         self.assertEqual(self.supervisor.messages, ["Map NO2"])
+        self.assertEqual(self.supervisor.answers, [None])
         [context] = self.supervisor.contexts
         self.assertEqual((context.identity.user_id, context.identity.conversation_id), (self.user.id, self.thread_id))
         for name in ("event: status", "event: chart", "event: artifact", "event: text", "event: done"):

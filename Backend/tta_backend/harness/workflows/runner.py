@@ -9,9 +9,16 @@ the knowledge notes agent steps are given, then:
   not-runnable spec before anything is written, starts the trace run with the
   spec's mode, builds the run's environment with ``build_env(context, run_id)``
   and runs it;
-- ``resume(env)`` continues a run saved as ``waiting``, on the spec version it
-  started with, from the step that paused; ``env`` is built for that run id;
+- ``resume(env, answer, step=...)`` continues a paused run, on the spec
+  version it started with, from the step that paused; ``env`` is built for
+  that run id. A ``waiting`` run takes no answer. A ``needs_input`` run takes
+  the answer to the question it waits on (the first in file order, or the
+  one of ``step``), checked in code before anything is resumed; the answer
+  is the resume value of that question's interrupt only;
 - ``cancel(env)`` and ``steps(env)`` act on a run the same way.
+
+``expire_paused`` cancels a conversation's runs paused for longer than
+``EXPIRY``, and ``cancel_paused`` cancels one paused run of any mode.
 
 The checkpoint thread is the run id. The checkpointer is not scoped by user,
 so every method first reads the run from the user's own trace store, which
@@ -29,6 +36,7 @@ step's answer.
 from __future__ import annotations
 
 import asyncio
+import datetime
 import logging
 from collections.abc import Awaitable, Callable, Collection, Mapping
 from dataclasses import dataclass
@@ -60,6 +68,7 @@ from tta_backend.harness.workflows.compile import (
     StepContext,
     compile_workflow,
 )
+from tta_backend.harness.workflows.answers import AnswerRejected, check_answer
 from tta_backend.harness.workflows.expressions import EvaluationError, Ref, evaluate_value, render_value
 from tta_backend.harness.workflows.inputs import InputProblem, resolve_inputs
 from tta_backend.harness.workflows.loader import WorkflowCatalogue
@@ -80,6 +89,20 @@ SOURCE_WAITING = (
 QUESTION_REASON = "Step {step} needs an answer before the workflow can continue."
 # Run statuses that are final; needs_input and waiting are pauses.
 _TERMINAL = frozenset({"done", "failed", "cancelled", "insufficient_evidence", "incomplete"})
+_PAUSED = frozenset({"needs_input", "waiting"})
+
+# A paused run left this long, from when it last paused, is cancelled at the next turn.
+EXPIRY = datetime.timedelta(days=30)
+EXPIRED_REASON = "The run waited more than 30 days to be continued, so it expired and was cancelled."
+
+ANSWER_REQUIRED = "Run {run_id} is waiting for an answer to step {step}; continue it with the answer."
+NOT_ASKING_DATA = "Run {run_id} is waiting for its data, not for an answer; continue it without one."
+NOT_ASKING_INPUTS = (
+    "Run {run_id} stopped before any step ran, so it takes no answer; run the workflow again with the answer "
+    "as an input."
+)
+NOT_ASKING_STEP = "Run {run_id} is not waiting on step {step}; it is waiting on step {asked}."
+NOT_ASKING_DONE = "Run {run_id} is {status}, so it is not waiting for an answer."
 
 
 def connect_reason(connectors: list[str]) -> str:
@@ -98,17 +121,27 @@ class RunNotResumable(Exception):
         self.status = status
 
 
-class AnswerNotSupported(RunNotResumable):
-    """A run paused on a question for the user; answering it into the paused run is not supported."""
+class AnswerNotTaken(Exception):
+    """An answer, or the lack of one, the run does not take; nothing was resumed.
+    ``reason`` is fixed wording for the user or the model."""
 
-    def __init__(self, run_id: str) -> None:
-        Exception.__init__(
-            self,
-            f"Run {run_id} is waiting for an answer. Resuming a run with an answer is not supported; "
-            "run the workflow again with the answer as an input.",
-        )
+    def __init__(self, run_id: str, step: str | None, reason: str) -> None:
+        super().__init__(reason)
         self.run_id = run_id
-        self.status = "needs_input"
+        self.step = step
+        self.reason = reason
+
+
+class BadAnswer(AnswerNotTaken):
+    """An answer that does not fit the question the run waits on."""
+
+
+class NotAsking(AnswerNotTaken):
+    """An answer for a run that is not waiting on that question."""
+
+
+class AnswerRequired(AnswerNotTaken):
+    """A run waiting on a question, resumed without an answer."""
 
 
 class NotAWorkflowRun(RunNotResumable):
@@ -252,37 +285,53 @@ class WorkflowRunner:
 
     # Resuming, cancelling, reading
 
-    async def resume(self, env: RunEnv) -> Result:
-        """Continue the run ``env`` was built for, saved as ``waiting``.
+    async def resume(self, env: RunEnv, answer: Any = None, *, step: str | None = None) -> Result:
+        """Continue the paused run ``env`` was built for.
 
-        Raises RunNotFound for a run that is not this user's, AnswerNotSupported
-        for one waiting on an answer, and RunNotResumable for any other status.
+        A ``waiting`` run is resumed without an answer. A ``needs_input`` run
+        is resumed with ``answer`` to the question it waits on: the one of
+        ``step`` when given, else the first in file order. The answer is
+        checked before anything is resumed and goes to that question only;
+        any other pause of the run is resumed as for a waiting run, so a
+        question not answered is asked again.
+
+        Raises RunNotFound for a run that is not this user's, AnswerNotTaken
+        (BadAnswer, NotAsking, AnswerRequired) for an answer the run does not
+        take, and RunNotResumable for a run that is not paused.
         """
         run, spec = await self._own_run(env)
-        if run.status == "needs_input":
-            raise AnswerNotSupported(run.id)
-        if run.status != "waiting":
+        if run.status not in _PAUSED:
+            if answer is not None:
+                raise NotAsking(run.id, step, NOT_ASKING_DONE.format(run_id=run.id, status=run.status))
             raise RunNotResumable(run.id, run.status)
         workflow = self._workflow(spec)
-        config = _config(run.id)
-        snapshot = await workflow.graph.aget_state(config)
+        snapshot = await workflow.graph.aget_state(_config(run.id))
         pending = _pending(snapshot.tasks)
+        answered: tuple[Interrupt, Any] | None = None
+        if run.status == "needs_input":
+            answered = _answering(spec, run.id, pending, answer, step)
+        elif answer is not None:
+            raise NotAsking(run.id, step, NOT_ASKING_DATA.format(run_id=run.id))
         if not pending:
             raise RunNotResumable(run.id, run.status)
-        await env.context.storage.traces.resume_run(env.context.identity.user_id, run.id)
-        return await self._guarded(env.context, run.id, spec, lambda: self._drive(env, workflow, *_resumption(pending)))
+        try:
+            await env.context.storage.traces.resume_run(env.context.identity.user_id, run.id)
+        except RunClosed as closed:
+            raise RunNotResumable(run.id, closed.status) from None
+        command, resumed = _resumption(pending, answered)
+        return await self._guarded(env.context, run.id, spec, lambda: self._drive(env, workflow, command, resumed))
 
-    async def cancel(self, env: RunEnv) -> Run:
+    async def cancel(self, env: RunEnv, *, reason: str = CANCELLED_REASON) -> Run:
         """Finish a run that has not finished as ``cancelled``. Its provider jobs are not cancelled.
 
-        The saved result becomes a cancelled one, keeping what the run had
-        reported. It is saved only once the cancel has finished the run, so a
-        run that finished first (RunClosed) keeps its own result.
+        The saved result becomes a cancelled one with ``reason``, keeping what
+        the run had reported. It is saved only once the cancel has finished
+        the run, so a run that finished first (RunClosed) keeps its own result.
         """
         run, spec = await self._own_run(env)
         if run.status not in ("running", "needs_input", "waiting"):
             raise RunNotResumable(run.id, run.status)
-        cancelled = await _cancelled_result(env.context, spec, run.id)
+        cancelled = await _cancelled_result(env.context, spec, run.id, reason)
         finished = await env.context.storage.traces.finish_run(
             env.context.identity.user_id, run.id, "cancelled", env.context.clock.now()
         )
@@ -342,8 +391,13 @@ class WorkflowRunner:
         if end:
             status = cast(ResultStatus, end["status"])
             reason = str(end["reason"])
+            # A capability question that cannot be answered into the run ends it with that question.
+            asked = end.get("question")
+            question = dict(asked) if isinstance(asked, dict) and status == "needs_input" else None
         elif paused:
-            asking = next((p for p in paused if p.get("kind") == PAUSE_QUESTION), None)
+            order = spec.step_ids
+            questions = [p for p in paused if p.get("kind") == PAUSE_QUESTION]
+            asking = min(questions, key=lambda p: _rank(order, p.get("step")), default=None)
             if asking is not None:
                 status, question = "needs_input", dict(asking["question"])
                 reason = QUESTION_REASON.format(step=asking["step"])
@@ -433,16 +487,77 @@ async def _save(context: RunContext, result: Result) -> None:
         logger.error("the result of workflow run %s could not be saved: %s", result.trace_id, type(exc).__name__)
 
 
-async def _cancelled_result(context: RunContext, spec: WorkflowSpec, run_id: str) -> Result:
+async def _cancelled_result(
+    context: RunContext, spec: WorkflowSpec, run_id: str, reason: str = CANCELLED_REASON
+) -> Result:
     """The run's saved result, marked cancelled; a bare cancelled result when none was saved."""
     try:
         saved = await context.storage.results.get(context.identity.user_id, run_id)
     except Exception:
         # Missing, or a store that cannot be read: the cancel still goes ahead.
-        return _envelope(spec, run_id, CANCELLED, CANCELLED_REASON, None, {})
-    return Result.model_validate(
-        {**saved.model_dump(), "status": CANCELLED, "reason": CANCELLED_REASON, "question": None}
-    )
+        return _envelope(spec, run_id, CANCELLED, reason, None, {})
+    return _marked_cancelled(saved, reason)
+
+
+def _marked_cancelled(saved: Result, reason: str) -> Result:
+    return Result.model_validate({**saved.model_dump(), "status": CANCELLED, "reason": reason, "question": None})
+
+
+async def cancel_paused(
+    context: RunContext, runner: WorkflowRunner, build_env: EnvFactory, run: Run, *, reason: str = CANCELLED_REASON,
+) -> Result:
+    """Finish ``run``, paused in ``needs_input`` or ``waiting``, as ``cancelled`` with ``reason``,
+    and return its saved result. Provider jobs are not cancelled.
+
+    A workflow run is cancelled through the runner; an exploration, or a run
+    whose spec is no longer loaded, is finished here, its saved result marked
+    cancelled. Raises RunNotResumable for a run that is not paused and
+    RunClosed when it finished meanwhile.
+    """
+    if run.status not in _PAUSED:
+        raise RunNotResumable(run.id, run.status)
+    user_id = context.identity.user_id
+    workflow = run.mode.workflow
+    if workflow is not None and (workflow.name, workflow.version) in runner._catalogue:
+        await runner.cancel(await build_env(context, run.id), reason=reason)
+        return await context.storage.results.get(user_id, run.id)
+    try:
+        saved = await context.storage.results.get(user_id, run.id)
+        cancelled = _marked_cancelled(saved, reason)
+    except Exception:
+        cancelled = Result(status=CANCELLED, mode=run.mode, trace_id=run.id, reason=reason)
+    await context.storage.traces.finish_run(user_id, run.id, CANCELLED, context.clock.now())
+    await _save(context, cancelled)
+    return cancelled
+
+
+def paused_since(run: Run) -> datetime.datetime:
+    """When a paused run last paused: the trace sets ``ended`` at each pause and clears it on resume."""
+    return run.ended or run.started
+
+
+async def expire_paused(
+    context: RunContext, runner: WorkflowRunner, build_env: EnvFactory, *, after: datetime.timedelta = EXPIRY,
+) -> tuple[str, ...]:
+    """Cancel, with the expired reason, the conversation's runs paused for longer than ``after``,
+    timed from when each last paused; the ids cancelled. A run that cannot be
+    cancelled is logged and left, so the turn goes on."""
+    traces, identity = context.storage.traces, context.identity
+    cutoff = context.clock.now() - after
+    expired: list[str] = []
+    for run in await traces.list_runs(identity.user_id, identity.conversation_id):
+        if run.status not in _PAUSED or paused_since(run) > cutoff:
+            continue
+        try:
+            await cancel_paused(context, runner, build_env, run, reason=EXPIRED_REASON)
+        except (RunClosed, RunNotResumable):
+            continue
+        except Exception as exc:
+            # The type name only: an exception's text can carry values or secrets.
+            logger.error("paused run %s could not be expired: %s", run.id, type(exc).__name__)
+            continue
+        expired.append(run.id)
+    return tuple(expired)
 
 
 async def _close(context: RunContext, result: Result) -> None:
@@ -463,12 +578,53 @@ async def _close(context: RunContext, result: Result) -> None:
         pass
 
 
-def _resumption(pending: list[Interrupt]) -> tuple[Command[str], dict[str, Mapping[str, Any]]]:
-    """The command that resumes every paused node, and what each paused with."""
+def _resumption(
+    pending: list[Interrupt], answered: tuple[Interrupt, Any] | None = None
+) -> tuple[Command[str], dict[str, Mapping[str, Any]]]:
+    """The command that resumes every paused node, and what each paused with.
+
+    With ``answered`` (a question's interrupt and its checked answer), that
+    interrupt alone is resumed with the answer, which its node also finds in
+    what it paused with.
+    """
     resumed: dict[str, Mapping[str, Any]] = {
         str(i.value["node"]): i.value for i in pending if isinstance(i.value, dict) and "node" in i.value
     }
-    return Command(resume={i.id: {"resumed": True} for i in pending}), resumed
+    values: dict[str, Any] = {i.id: {"resumed": True} for i in pending}
+    if answered is not None:
+        target, answer = answered
+        values[target.id] = {"answer": answer}
+        if isinstance(target.value, dict) and "node" in target.value:
+            resumed[str(target.value["node"])] = {**target.value, "answer": answer}
+    return Command(resume=values), resumed
+
+
+def _rank(order: tuple[str, ...], step: Any) -> int:
+    return order.index(step) if step in order else len(order)
+
+
+def _answering(
+    spec: WorkflowSpec, run_id: str, pending: list[Interrupt], answer: Any, step: str | None
+) -> tuple[Interrupt, Any]:
+    """The question interrupt ``answer`` is for, and the answer checked against it."""
+    questions = sorted(
+        (i for i in pending if isinstance(i.value, dict) and i.value.get("kind") == PAUSE_QUESTION),
+        key=lambda i: _rank(spec.step_ids, i.value.get("step")),
+    )
+    if not questions:
+        raise NotAsking(run_id, step, NOT_ASKING_INPUTS.format(run_id=run_id))
+    first = str(questions[0].value.get("step"))
+    if answer is None:
+        raise AnswerRequired(run_id, first, ANSWER_REQUIRED.format(run_id=run_id, step=first))
+    target = questions[0] if step is None else next((q for q in questions if q.value.get("step") == step), None)
+    if target is None:
+        raise NotAsking(run_id, step, NOT_ASKING_STEP.format(run_id=run_id, step=step, asked=first))
+    asked = str(target.value.get("step"))
+    try:
+        checked = check_answer(target.value.get("question") or {}, answer)
+    except AnswerRejected as rejected:
+        raise BadAnswer(run_id, asked, rejected.reason) from None
+    return target, checked
 
 
 def _pending(tasks: tuple[Any, ...]) -> list[Interrupt]:

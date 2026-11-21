@@ -13,6 +13,7 @@ from tests.test_harness_sources_satellite import NO2, FakeService
 from tests.test_harness_workflow_agent import NOTES, AgentFixture, agent_spec, choice, said
 from tests.test_harness_workflow_runner import (
     AREA_ENTRY,
+    ASKING,
     DATASETS,
     EDL_SECRET,
     FETCH,
@@ -21,6 +22,8 @@ from tests.test_harness_workflow_runner import (
     Fixture,
     Script,
     fake_registry,
+    make,
+    spec,
     three_days,
 )
 from tta_backend.harness.capabilities.catalogue import build_registry
@@ -29,9 +32,14 @@ from tta_backend.harness.handles import HandleRecord
 from tta_backend.harness.storage import Stores, ensure_tables, postgres_stores
 from tta_backend.harness.testing import ScriptedChatModel, ScriptedModels
 from tta_backend.harness.trace import RunNotFound
+from tta_backend.harness.workflows import BadAnswer
 from tta_backend.harness.workflows.loader import load_specs
 
 CHECKPOINT_TABLES = ("checkpoints", "checkpoint_blobs", "checkpoint_writes")
+CAPABILITY_ASKS = spec(
+    [{"id": "choose", "use": "ops.ask", "with": {"label": "choose"}}, make("after", product="$choose.values.level")],
+    {"data": ["$after"]}, inputs={}, name="levels",
+)
 
 
 @asynccontextmanager
@@ -168,3 +176,37 @@ class RunnerPostgresTests(PostgresTestCase):
                 self.assertIn(waiting.trace_id.encode(), blob)
                 self.assertIn(b"job_1", blob)
                 self.assertNotIn(SECRET.encode(), blob)
+
+    async def test_a_question_is_answered_into_the_run_by_another_runner(self):
+        script = Script()
+        registry = fake_registry(script)
+        catalogue = load_specs({"asks": ASKING["confirm_list"], "level": CAPABILITY_ASKS}, registry, DATASETS)
+        async with self.world() as (connect, stores, root):
+            async with saver_in(connect) as saver:
+                first = Fixture(root, registry, catalogue, script, stores=stores, saver=saver)
+                listed = await first.start({})
+                level = await first.start({}, name="levels")
+                self.assertEqual((listed.status, level.status), ("needs_input", "needs_input"))
+                with self.assertRaises(BadAnswer):
+                    await first.runner.resume(await first.env(listed.trace_id), ["not a date"])
+                self.assertEqual(await first.run_status(listed.trace_id), "needs_input")
+
+            # A later turn: its own connection, checkpointer and runner.
+            async with saver_in(connect) as saver:
+                later = Fixture(root, registry, catalogue, script, stores=stores, saver=saver)
+                done = await later.runner.resume(await later.env(listed.trace_id), ["2024-06-02", "2024-06-09"])
+                self.assertEqual(done.status, "done", done.reason)
+                self.assertEqual(script.calls[-1][1]["days"], ["2024-06-02", "2024-06-09"])
+                answered = [e for e in await stores.traces.entries("user-a", listed.trace_id) if e.kind == "ask"]
+                self.assertEqual([(e.status, e.result) for e in answered], [
+                    ("waiting", {"offered": 3}), ("done", {"answer": ["2024-06-02", "2024-06-09"]}),
+                ])
+
+                chosen = await later.runner.resume(await later.env(level.trace_id), "surface")
+                self.assertEqual(chosen.status, "done", chosen.reason)
+                self.assertEqual(script.calls[-1][1]["product"], "surface")
+                self.assertEqual(await later.run_status(level.trace_id), "done")
+                self.assertEqual((await later.entries(level.trace_id))[-3:], [
+                    ("ask", "ops.ask", "choose", "done"), ("use", "ops.ask", "choose", "done"),
+                    ("use", "ops.make", "after", "done"),
+                ])

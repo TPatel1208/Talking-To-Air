@@ -9,7 +9,7 @@ from tests.test_harness_specialists import Model, call_on_area, choice_of, final
 from tests.test_harness_workflow_packs_run import JULY, JUNE, SMOKE_DATE, PackRun
 from tta_backend.harness.capabilities.catalogue import build_registry
 from tta_backend.harness.context import Ledger, LedgerArea, LedgerChart, LedgerHandle, build_ledger, render_ledger
-from tta_backend.harness.context.ledger import EMPTY, HEADING
+from tta_backend.harness.context.ledger import ANSWER_ADVICE, ANSWER_SHAPES, EMPTY, HEADING
 from tta_backend.harness.handles import Descriptor, HandleRecord
 from tta_backend.harness.knowledge import NoteCatalogue
 from tta_backend.harness.models import NO_BACKOFF
@@ -317,6 +317,24 @@ class WaitingTests(LedgerCase):
         self.assertEqual(result.status, "needs_input")
         [line] = self.section(await self.text(), "Runs not done:")
         self.assertEqual(line, f"- {result.trace_id} needs_input, Draft workflow: map v1: {result.reason}")
+
+    async def test_a_run_paused_on_a_question_says_how_to_answer_or_drop_it(self):
+        self.service.estimated_bytes = 100_000_000
+        result = await self.start("map", MAP)
+        self.assertEqual(result.status, "needs_input")
+        assert result.question is not None
+        run = result.trace_id
+        [line] = self.section(await self.text(), "Runs not done:")
+        self.assertEqual(line, (
+            f"- {run} needs_input, Draft workflow: map v1: {result.reason} Question: {result.question['prompt']} "
+            f"Options: confirm | narrow "
+            + ANSWER_ADVICE.format(step="data", kind="pick_one", run_id=run, shape=ANSWER_SHAPES["pick_one"])
+        ))
+
+    async def test_a_question_that_ended_its_run_gives_no_answer_advice(self):
+        result = await self.start("map", {**MAP, "area": "Atlantis"})
+        self.assertNotIn("resume_run", await self.text())
+        self.assertEqual(result.status, "needs_input")
 
     async def test_a_question_with_options_lists_them(self):
         ledger = Ledger(conversation_id="conv-1", open_runs=(

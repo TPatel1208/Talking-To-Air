@@ -1,11 +1,17 @@
-"""The supervisor's six tools, built for one turn.
+"""The supervisor's seven tools, built for one turn.
 
 - ``run_workflow(name, inputs)``: a runnable workflow at its latest runnable
   version. Inputs that fail the spec's checks come back with the reason; a
   second such failure for the same workflow in a turn is answered with a
   fixed message saying not to retry it.
-- ``resume_run(run_id)``: only a waiting workflow run whose jobs the turn's
-  ledger shows as ready, failed or unchecked, once per turn.
+- ``resume_run(run_id, answer)``: a waiting workflow run whose jobs the
+  turn's ledger shows as ready, failed or unchecked, with no answer; or a
+  workflow run the ledger shows waiting on a question, with the answer. Each
+  run is resumed at most once per turn. An answer that does not fit comes
+  back with the fixed reason once per run in a turn; after that the model is
+  told to ask the user again.
+- ``cancel_run(run_id)``: a run the ledger shows paused or waiting, finished
+  as cancelled. Its provider jobs are not cancelled.
 - ``explore(tasks)``: at most ``MAX_TASKS`` exploration tasks, run together.
 - ``resolve_area``, ``search_datasets``, ``check_availability``: lookups
   through ``invoke``. A turn's lookups share one exploratory run, started on
@@ -52,15 +58,26 @@ from tta_backend.harness.specialists.task import ExploreLimits, ExploreTask
 from tta_backend.harness.specialists.tools import failure_view, retry_helps, tool_schema
 from tta_backend.harness.specialists.tools import result_view as capability_view
 from tta_backend.harness.supervisor.answer import dumps, result_view, unavailable_wording, view_of
-from tta_backend.harness.trace import FailureCategory, Run, RunNotFound, StepFailure, new_run_id
+from tta_backend.harness.trace import FailureCategory, Run, RunClosed, RunNotFound, StepFailure, new_run_id
 from tta_backend.harness.workflows.compile import NotRunnable
 from tta_backend.harness.workflows.inputs import input_step_id
 from tta_backend.harness.workflows.loader import UnknownWorkflow, WorkflowCatalogue
-from tta_backend.harness.workflows.runner import INTERNAL_REASON, EnvFactory, RunNotResumable, WorkflowRunner
+from tta_backend.harness.workflows.answers import answerable
+from tta_backend.harness.workflows.runner import (
+    INTERNAL_REASON,
+    AnswerNotTaken,
+    BadAnswer,
+    EnvFactory,
+    RunNotResumable,
+    WorkflowRunner,
+    cancel_paused,
+)
 
 logger = logging.getLogger(__name__)
 
-TOOL_NAMES = ("run_workflow", "resume_run", "explore", "resolve_area", "search_datasets", "check_availability")
+TOOL_NAMES = (
+    "run_workflow", "resume_run", "cancel_run", "explore", "resolve_area", "search_datasets", "check_availability",
+)
 LOOKUPS = {
     "resolve_area": "sources.areas.resolve",
     "search_datasets": "sources.satellite.search",
@@ -80,6 +97,23 @@ STOP_RETRYING = (
 NOT_READY = (
     "Only a workflow run the session ledger shows as waiting, with its retrieval jobs not still running, "
     "can be resumed; this one cannot be resumed now."
+)
+ANSWER_NEEDED = (
+    "This run is waiting for the user's answer to its question: call resume_run with their answer, "
+    "or ask the user if they have not answered."
+)
+NOT_ASKING = (
+    "resume_run takes an answer only for a workflow run the session ledger shows waiting on a question; "
+    "this one is not."
+)
+BAD_ANSWER = "{reason} Give the user's answer in that form, or ask the user."
+ASK_AGAIN = (
+    "That answer did not fit the question again. Do not try another answer this turn: "
+    "ask the user the question again."
+)
+NOT_CANCELLABLE = (
+    "Only a run the session ledger shows as waiting, on the user or on its data, can be cancelled; "
+    "this one cannot be cancelled now."
 )
 TOO_MANY_TASKS = f"An explore call takes 1 to {MAX_TASKS} tasks; split the work or drop a task."
 SPLIT_PLACE = (
@@ -110,7 +144,14 @@ RUN_WORKFLOW_DESCRIPTION = (
 )
 RESUME_DESCRIPTION = (
     "Continue a workflow run the session ledger shows as waiting, as its advice for that run says; "
-    "not one whose jobs are still running."
+    "not one whose jobs are still running. For a run waiting on a question, give the user's answer as answer."
+)
+CANCEL_DESCRIPTION = (
+    "Cancel a run the session ledger shows waiting on the user or on its data, when the user says to drop it."
+)
+ANSWER_FIELD = (
+    "Only for a run waiting on a question: the user's answer. One of the options for pick_one; a list of "
+    "options for pick_many; the edited list of items for confirm_list; the user's words for text."
 )
 EXPLORE_DESCRIPTION = (
     f"Run 1 to {MAX_TASKS} exploration tasks in parallel, each its own exploratory run. Give each task an "
@@ -219,6 +260,14 @@ def tool_schemas(workflow_names: Sequence[str], capabilities: CapabilityRegistry
         },
         "resume_run": {
             "type": "object",
+            "properties": {
+                "run_id": {"type": "string", "description": "A run id from the session ledger."},
+                "answer": {"description": ANSWER_FIELD},
+            },
+            "required": ["run_id"],
+        },
+        "cancel_run": {
+            "type": "object",
             "properties": {"run_id": {"type": "string", "description": "A run id from the session ledger."}},
             "required": ["run_id"],
         },
@@ -299,6 +348,8 @@ class TurnTools:
         self.unavailable: list[str] = []
         self._input_failures: Counter[str] = Counter()
         self._resumed: set[str] = set()
+        # Answers that did not fit, by run, this turn.
+        self._bad_answers: Counter[str] = Counter()
         self._lookup_env: RunEnv | None = None
         self._lookup_lock = asyncio.Lock()
         self.lookup_handles: list[str] = []
@@ -312,11 +363,13 @@ class TurnTools:
         bodies: dict[str, Callable[..., Awaitable[str]]] = {
             "run_workflow": self.run_workflow,
             "resume_run": self.resume_run,
+            "cancel_run": self.cancel_run,
             "explore": self.explore,
         }
         descriptions = {
             "run_workflow": RUN_WORKFLOW_DESCRIPTION,
             "resume_run": RESUME_DESCRIPTION,
+            "cancel_run": CANCEL_DESCRIPTION,
             "explore": EXPLORE_DESCRIPTION,
         }
         for tool, name in LOOKUPS.items():
@@ -413,19 +466,61 @@ class TurnTools:
         self._produced(result)
         return result_view(result)
 
-    async def resume_run(self, run_id: Any = None, **extra: Any) -> str:
+    async def resume_run(self, run_id: Any = None, answer: Any = None, **extra: Any) -> str:
         open_run = next((run for run in self._ledger.open_runs if run.run_id == run_id), None)
-        if (
-            extra or open_run is None or not open_run.workflow or open_run.status != "waiting"
-            or open_run.job_state not in RESUMABLE or open_run.run_id in self._resumed
-        ):
+        if extra or open_run is None or not open_run.workflow or open_run.run_id in self._resumed:
+            return _refused(NOT_READY)
+        if open_run.status == "needs_input" and answerable(open_run.question, open_run.run_id):
+            return await self._answer(open_run.run_id, answer)
+        if answer is not None:
+            return _refused(NOT_ASKING)
+        if open_run.status != "waiting" or open_run.job_state not in RESUMABLE:
             return _refused(NOT_READY)
         self._resumed.add(open_run.run_id)
         env = await self._build_env(self.context, open_run.run_id)
         try:
             result = await self._runner.resume(env)
+        except (RunNotResumable, RunNotFound, AnswerNotTaken):
+            return _refused(NOT_READY)
+        self._produced(result)
+        return result_view(result)
+
+    async def _answer(self, run_id: str, answer: Any) -> str:
+        """Resume a run waiting on a question with the model's reading of the user's answer, checked in code."""
+        if answer is None:
+            return _refused(ANSWER_NEEDED)
+        if self._bad_answers[run_id] >= 2:
+            return _refused(ASK_AGAIN)
+        env = await self._build_env(self.context, run_id)
+        try:
+            result = await self._runner.resume(env, answer)
+        except BadAnswer as bad:
+            self._bad_answers[run_id] += 1
+            return _refused(ASK_AGAIN if self._bad_answers[run_id] >= 2 else BAD_ANSWER.format(reason=bad.reason))
+        except AnswerNotTaken as refused:
+            return _refused(refused.reason)
         except (RunNotResumable, RunNotFound):
             return _refused(NOT_READY)
+        self._resumed.add(run_id)
+        self._produced(result)
+        return result_view(result)
+
+    def answered(self, result: Result) -> None:
+        """A run the app's question control resumed in code before the model ran: it is one of
+        the turn's results and is not resumed again this turn."""
+        self._resumed.add(result.trace_id)
+        self._produced(result)
+
+    async def cancel_run(self, run_id: Any = None, **extra: Any) -> str:
+        open_run = next((run for run in self._ledger.open_runs if run.run_id == run_id), None)
+        if extra or open_run is None or open_run.status not in ("needs_input", "waiting"):
+            return _refused(NOT_CANCELLABLE)
+        try:
+            run = await self.context.storage.traces.get_run(self.context.identity.user_id, open_run.run_id)
+            result = await cancel_paused(self.context, self._runner, self._build_env, run)
+        except (RunNotResumable, RunNotFound, RunClosed):
+            return _refused(NOT_CANCELLABLE)
+        self._resumed.add(open_run.run_id)
         self._produced(result)
         return result_view(result)
 

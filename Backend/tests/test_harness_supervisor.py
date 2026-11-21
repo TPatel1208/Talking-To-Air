@@ -1,6 +1,7 @@
 """The supervisor run on scripted models: tools, ledger, limits, answer assembly, streaming and checkpoints."""
 import asyncio
 import dataclasses
+import datetime
 import json
 import tempfile
 from collections.abc import AsyncIterator
@@ -42,13 +43,20 @@ from tta_backend.harness.supervisor.supervisor import (
     TOOL_LIMIT,
     UNFINISHED_CALL,
 )
+from tta_backend.harness.supervisor.supervisor import ANSWER_GONE, AppAnswer
 from tta_backend.harness.supervisor.tools import (
+    ANSWER_NEEDED,
+    ASK_AGAIN,
+    BAD_ANSWER,
+    NOT_ASKING,
+    NOT_CANCELLABLE,
     NOT_READY,
     STOP_RETRYING,
     TOO_MANY_TASKS,
     UNKNOWN_WORKFLOW,
     tool_schemas,
 )
+from tta_backend.harness.workflows.answers import PICK_ONE
 from tta_backend.harness.testing import (
     RecordingEvents,
     ScriptedModels,
@@ -57,7 +65,7 @@ from tta_backend.harness.testing import (
     rate_limited,
     tool_call,
 )
-from tta_backend.harness.workflows.runner import JOB_WAITING
+from tta_backend.harness.workflows.runner import EXPIRED_REASON, JOB_WAITING
 
 MAP_INPUTS = {"quantity": NO2, "area": "New Jersey", "dates": JUNE}
 RESOLVE = "sources.areas.resolve"
@@ -184,9 +192,11 @@ class SupervisorCase(PackRun):
         )
 
     async def turn(self, supervisor: Supervisor, message: str = "Map NO2 over New Jersey for June 1 to 3, 2024.",
-                   context: RunContext | None = None, build: Any = None, earthdata: Any = None) -> Turn:
+                   context: RunContext | None = None, build: Any = None, earthdata: Any = None,
+                   answer: AppAnswer | None = None) -> Turn:
         return await supervisor.turn(
             context or self.f.context, build or self.build, earthdata or self.service.earthdata(), message,
+            answer=answer,
         )
 
     async def checkpoint(self, context: RunContext | None = None, saver: InMemorySaver | None = None) -> list[BaseMessage]:
@@ -606,6 +616,7 @@ class QuestionTests(SupervisorCase):
         self.assertEqual(turn.question, result.question)
         self.assertEqual(turn.variable_choice, {
             "run_id": result.trace_id, "prompt": result.question["prompt"], "options": ["confirm", "narrow"],
+            "step": "data", "kind": "pick_one", "question": result.question["prompt"],
         })
         self.assertIn(f"Question: {result.question['prompt']}", turn.text)
         self.assertIn("Options: confirm | narrow", turn.text)
@@ -617,6 +628,188 @@ class QuestionTests(SupervisorCase):
         self.assertEqual(result.status, "needs_input")
         self.assertEqual(turn.question, result.question)
         self.assertIsNone(turn.variable_choice)
+
+
+LARGE = 100_000_000
+CONFIRM_OPTIONS = "confirm | narrow"
+
+
+class PausedRunTests(SupervisorCase):
+    """Runs paused on a question, answered, refused and cancelled through the supervisor."""
+
+    async def asked(self, model: Model) -> tuple[Supervisor, Result]:
+        self.service.estimated_bytes = LARGE
+        model.script[:0] = [run_map(), answer("The retrieval is large.")]
+        supervisor = self.supervisor(model)
+        [result] = (await self.turn(supervisor)).results
+        self.assertEqual(result.status, "needs_input")
+        return supervisor, result
+
+    async def test_resume_run_answers_a_paused_run_and_the_ledger_says_how(self):
+        model = Model(script=[])
+        supervisor, asked = await self.asked(model)
+        run = asked.trace_id
+        model.script.extend([tool_call("resume_run", {"run_id": run, "answer": "Confirm"}), answer("The map is ready.")])
+
+        turn = await self.turn(supervisor, "Yes, go ahead.")
+
+        ledger = ledger_text(model.received[2])
+        self.assertIn(f"It waits on step data (pick_one): when the user answers, call resume_run({run}, answer)", ledger)
+        self.assertIn(f"Options: {CONFIRM_OPTIONS}", ledger)
+        [result] = turn.results
+        self.assertEqual((result.trace_id, result.status), (run, "done"), result.reason)
+        self.assertEqual(last_tool(model)["status"], "done")
+        self.assertEqual(len(self.service.jobs), 1)
+        self.assertIsNone(turn.question)
+        self.assertIn("The map is ready.", turn.text)
+
+    async def test_a_bad_answer_comes_back_once_with_its_reason_then_the_model_is_told_to_ask_again(self):
+        model = Model(script=[])
+        supervisor, asked = await self.asked(model)
+        run = asked.trace_id
+        model.script.extend([
+            tool_call("resume_run", {"run_id": run, "answer": "maybe"}),
+            tool_call("resume_run", {"run_id": run, "answer": "perhaps"}),
+            tool_call("resume_run", {"run_id": run, "answer": "confirm"}),
+            answer("Please choose confirm or narrow."),
+        ])
+
+        turn = await self.turn(supervisor, "Maybe.")
+
+        reason = PICK_ONE.format(options=CONFIRM_OPTIONS)
+        self.assertEqual(last_tool(model, 3), {"status": "refused", "reason": BAD_ANSWER.format(reason=reason)})
+        self.assertEqual(last_tool(model, 4), {"status": "refused", "reason": ASK_AGAIN})
+        self.assertEqual(last_tool(model, 5), {"status": "refused", "reason": ASK_AGAIN})
+        self.assertEqual(turn.results, ())
+        self.assertEqual((await self.f.stores.traces.get_run("user-a", run)).status, "needs_input")
+        self.assertEqual(len(self.service.jobs), 0)
+
+        # A later turn may try again.
+        model.script.extend([tool_call("resume_run", {"run_id": run, "answer": "confirm"}), answer("Done.")])
+        [result] = (await self.turn(supervisor, "Confirm.")).results
+        self.assertEqual(result.status, "done", result.reason)
+
+    async def test_an_answer_is_refused_for_a_run_not_waiting_on_one_and_needed_for_one_that_is(self):
+        model = Model(script=[])
+        supervisor, asked = await self.asked(model)
+        self.service.statuses = list(STILL_RUNNING)
+        self.service.estimated_bytes = 1000
+        build = self.env_factory(limits=SHORT_WAIT)
+        waiting = await self.f.runner.start(self.f.context, build, "map", 1, MAP_INPUTS)
+        self.assertEqual(waiting.status, "waiting")
+        model.script.extend([
+            tool_call("resume_run", {"run_id": asked.trace_id}),
+            tool_call("resume_run", {"run_id": waiting.trace_id, "answer": "confirm"}),
+            answer("Waiting."),
+        ])
+        await self.turn(supervisor, "Go on.", build=build)
+        self.assertEqual(last_tool(model, 3), {"status": "refused", "reason": ANSWER_NEEDED})
+        self.assertEqual(last_tool(model, 4), {"status": "refused", "reason": NOT_ASKING})
+
+    async def test_cancel_run_drops_a_paused_run_and_the_ledger_shows_it_cancelled(self):
+        model = Model(script=[])
+        supervisor, asked = await self.asked(model)
+        run = asked.trace_id
+        model.script.extend([
+            tool_call("cancel_run", {"run_id": run}), tool_call("cancel_run", {"run_id": run}), answer("Dropped."),
+            answer("Nothing is waiting."),
+        ])
+
+        turn = await self.turn(supervisor, "Never mind, drop it.")
+
+        cancelled = last_tool(model, 3)
+        self.assertEqual((cancelled["run_id"], cancelled["status"]), (run, "cancelled"))
+        self.assertEqual(last_tool(model, 4), {"status": "refused", "reason": NOT_CANCELLABLE})
+        [result] = turn.results
+        self.assertEqual((result.trace_id, result.status), (run, "cancelled"))
+        self.assertEqual((await self.f.stores.traces.get_run("user-a", run)).status, "cancelled")
+        await self.turn(supervisor, "Anything waiting?")
+        self.assertIn(f"- {run} cancelled, {asked.mode.label()}: The run was cancelled.", ledger_text(model.received[5]))
+
+    async def test_an_answer_from_the_app_resumes_the_run_before_any_model_call(self):
+        model = Model(script=[])
+        supervisor, asked = await self.asked(model)
+        run = asked.trace_id
+        seen_status: list[str] = []
+
+        def prose(messages: list[BaseMessage]) -> AIMessage:
+            seen_status.append(json.loads(tool_messages(messages)[-1].text)["status"])
+            return answer("The map is ready.")
+
+        model.script.append(prose)
+        turn = await self.turn(supervisor, "confirm", answer=AppAnswer(run_id=run, step="data", value="confirm"))
+
+        self.assertEqual(model.calls, 3)
+        self.assertEqual(seen_status, ["done"])
+        sent = model.received[2]
+        call = next(m for m in reversed(sent) if isinstance(m, AIMessage) and m.tool_calls)
+        self.assertEqual(call.tool_calls[0]["name"], "resume_run")
+        self.assertEqual(call.tool_calls[0]["args"], {"run_id": run, "answer": "confirm"})
+        self.assertEqual([m.text for m in sent if isinstance(m, HumanMessage)][-1], "confirm")
+        [result] = turn.results
+        self.assertEqual((result.trace_id, result.status), (run, "done"), result.reason)
+        self.assertEqual((turn.model_calls, turn.tool_calls), (1, 0))
+        self.assertTrue(turn.text.endswith("The map is ready.") or "The map is ready." in turn.text)
+        saved = await self.checkpoint()
+        self.assertTrue(any(isinstance(m, ToolMessage) and m.tool_call_id == call.tool_calls[0]["id"] for m in saved))
+
+    async def test_an_answer_from_the_app_for_a_run_of_another_conversation_resumes_nothing(self):
+        model = Model(script=[])
+        supervisor, asked = await self.asked(model)
+        run = asked.trace_id
+        elsewhere = dataclasses.replace(
+            self.f.context, identity=dataclasses.replace(self.f.context.identity, conversation_id="conv-2"),
+            events=RecordingEvents(),
+        )
+
+        turn = await self.turn(supervisor, "confirm", context=elsewhere,
+                               answer=AppAnswer(run_id=run, step="data", value="confirm"))
+
+        self.assertEqual(turn.text, ANSWER_GONE)
+        self.assertEqual((turn.results, turn.question, turn.variable_choice), ((), None, None))
+        self.assertEqual(model.calls, 2)
+        self.assertEqual((await self.f.stores.traces.get_run("user-a", run)).status, "needs_input")
+        self.assertEqual(len(self.service.jobs), 0)
+        self.assertEqual(
+            [e.kind for e in await self.f.stores.traces.entries("user-a", run)].count("ask"), 0,
+        )
+
+    async def test_an_answer_from_the_app_that_does_not_fit_is_refused_without_a_model_call(self):
+        model = Model(script=[])
+        supervisor, asked = await self.asked(model)
+        run = asked.trace_id
+        turn = await self.turn(supervisor, "maybe", answer=AppAnswer(run_id=run, step="data", value="maybe"))
+
+        self.assertEqual(model.calls, 2)
+        self.assertTrue(turn.text.startswith(PICK_ONE.format(options=CONFIRM_OPTIONS)), turn.text)
+        assert asked.question is not None
+        self.assertIn(f"Question: {asked.question['prompt']}", turn.text)
+        self.assertIn(f"Options: {CONFIRM_OPTIONS}", turn.text)
+        self.assertEqual(turn.question, asked.question)
+        assert turn.variable_choice is not None
+        self.assertEqual(turn.variable_choice["run_id"], run)
+        self.assertEqual((turn.model_calls, turn.status), (0, "answered"))
+        self.assertEqual((await self.f.stores.traces.get_run("user-a", run)).status, "needs_input")
+
+        for stale in (AppAnswer(run_id=run, step="figure", value="confirm"),
+                      AppAnswer(run_id="run_" + "0" * 32, step="data", value="confirm")):
+            with self.subTest(stale=stale):
+                refused = await self.turn(supervisor, "confirm", answer=stale)
+                self.assertTrue(refused.text.startswith(ANSWER_GONE), refused.text)
+        self.assertEqual(model.calls, 2)
+
+    async def test_a_run_paused_past_its_expiry_is_cancelled_at_the_next_turn(self):
+        model = Model(script=[])
+        supervisor, asked = await self.asked(model)
+        model.script.append(answer("Hello."))
+        later = dataclasses.replace(
+            self.f.context, clock=TickingClock(self.f.context.clock.now() + datetime.timedelta(days=31)),
+        )
+        await self.turn(supervisor, "Hello again.", context=later)
+        saved = await self.f.stores.results.get("user-a", asked.trace_id)
+        self.assertEqual((saved.status, saved.reason), ("cancelled", EXPIRED_REASON))
+        self.assertIn(f"- {asked.trace_id} cancelled, {asked.mode.label()}: {EXPIRED_REASON}",
+                      ledger_text(model.received[2]))
 
 
 class DoneExtrasTests(SupervisorCase):
@@ -666,6 +859,7 @@ class DoneExtrasTests(SupervisorCase):
         self.assertEqual(turn.question, first.question)
         self.assertEqual(turn.variable_choice, {
             "run_id": first.trace_id, "prompt": first.question["prompt"], "options": ["confirm", "narrow"],
+            "step": "data", "kind": "pick_one", "question": first.question["prompt"],
         })
 
 
@@ -940,7 +1134,7 @@ class HistoryTests(SupervisorCase):
 
 
 class ToolSetTests(SupervisorCase):
-    async def test_exactly_the_six_tools_are_offered(self):
+    async def test_exactly_the_seven_tools_are_offered(self):
         model = Model(script=[answer("Hi.")])
         await self.turn(self.supervisor(model), "Hello")
         self.assertEqual(model.tools_offered, [list(TOOL_NAMES)])

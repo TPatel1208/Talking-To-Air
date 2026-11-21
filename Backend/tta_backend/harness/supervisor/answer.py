@@ -38,6 +38,7 @@ NOT_DONE_HEADING = "Not finished:"
 QUESTION_LINE = "Question: {prompt}"
 UNAVAILABLE = "{source} is unavailable right now, so nothing was started; try again in a few minutes."
 OPTIONS_LINE = "Options: {options}"
+ITEMS_LINE = "Items: {items}"
 
 # Results whose handles name no source: nothing they hold was delivered as an answer.
 _NO_SOURCES = frozenset({"failed", "cancelled"})
@@ -198,6 +199,9 @@ def _question_lines(question: dict[str, Any]) -> list[str]:
     options = question.get("options")
     if isinstance(options, list | tuple) and options:
         lines.append(OPTIONS_LINE.format(options=" | ".join(_option(option) for option in options)))
+    items = question.get("items")
+    if isinstance(items, list | tuple) and items:
+        lines.append(ITEMS_LINE.format(items=" | ".join(_option(item) for item in items)))
     return lines
 
 

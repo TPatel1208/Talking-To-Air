@@ -23,6 +23,7 @@ from tta_backend.harness.jobs import JobState
 from tta_backend.harness.results import Finding, Result
 from tta_backend.harness.run_context import RunContext
 from tta_backend.harness.trace import Run, RunStatus, TraceEntry
+from tta_backend.harness.workflows.answers import answerable
 
 RESOLVE = "sources.areas.resolve"
 FIND_MONITORS = "sources.monitors.find"
@@ -38,6 +39,18 @@ NO_RESULT = "No result was saved for this run."
 
 _WORDING_CHARS = 120
 _OPTION_CHARS = 80
+
+# What resume_run's answer is for each kind of question.
+ANSWER_SHAPES = {
+    "pick_one": "one of the options",
+    "pick_many": "a list of one or more of the options",
+    "confirm_list": "the list of items as the user edited it",
+    "text": "the user's words",
+}
+ANSWER_ADVICE = (
+    "It waits on step {step} ({kind}): when the user answers, call resume_run({run_id}, answer) with {shape} as "
+    "the answer; cancel_run({run_id}) drops it."
+)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -497,6 +510,17 @@ def _waiting_advice(run: LedgerOpenRun) -> str:
     return f"{jobs} An exploration cannot be resumed; asking the same question again collects the saved job."
 
 
+def _answer_advice(run: LedgerOpenRun) -> str | None:
+    """How to answer a workflow run paused on a question; None for any other run."""
+    question = run.question
+    if run.status != "needs_input" or not run.workflow or question is None or not answerable(question, run.run_id):
+        return None
+    kind = str(question["kind"])
+    return ANSWER_ADVICE.format(
+        step=_line(str(question["step"]), _WORDING_CHARS), kind=kind, run_id=run.run_id, shape=ANSWER_SHAPES[kind],
+    )
+
+
 def _open_line(run: LedgerOpenRun) -> str:
     said = [f"- {run.run_id} {run.status}, {_line(run.mode_label)}:"]
     if run.reason:
@@ -507,6 +531,9 @@ def _open_line(run: LedgerOpenRun) -> str:
         said.extend(_question_text(run.question, run.reason))
     if run.status == "waiting":
         said.append(_waiting_advice(run))
+    advice = _answer_advice(run)
+    if advice is not None:
+        said.append(advice)
     return " ".join(said)
 
 
