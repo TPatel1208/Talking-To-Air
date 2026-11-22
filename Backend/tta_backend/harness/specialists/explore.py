@@ -169,9 +169,12 @@ class _Task:
         notes: NoteCatalogue,
         limits: ExploreLimits,
         backoff: Backoff,
+        instruments: tuple[str, ...] = (),
     ) -> None:
         self.env = env
         self.task = task
+        # Instruments the user's message names; the task's satellite calls must use one of them.
+        self.instruments = instruments
         self.registry = registry
         self.notes = notes
         self.limits = limits
@@ -215,7 +218,7 @@ class _Task:
             choice = self.env.model_for("explore")
         except StepFailure as missing:
             return _Outcome.failed(missing.category, missing.reason)
-        caller = Caller(self.env, self.state, self.notes, seq)
+        caller = Caller(self.env, self.state, self.notes, seq, instruments=self.instruments)
         stopped = await self._prepare(caller, choice)
         if stopped is not None:
             return stopped
@@ -369,6 +372,7 @@ async def _one(
     limits: ExploreLimits,
     backoff: Backoff,
     run_id: str,
+    instruments: tuple[str, ...] = (),
 ) -> Result:
     identity = context.identity
     await context.storage.traces.start_run(Run(
@@ -378,7 +382,7 @@ async def _one(
     state = TaskState()
     try:
         env = with_wait(await build_env(context, run_id), limits)
-        work = _Task(env, task, registry, notes, limits, backoff)
+        work = _Task(env, task, registry, notes, limits, backoff, instruments)
         state = work.state
         outcome = await work.run()
     except asyncio.CancelledError:
@@ -412,11 +416,12 @@ async def _guarded(
     limits: ExploreLimits,
     backoff: Backoff,
     run_id: str,
+    instruments: tuple[str, ...] = (),
 ) -> Result:
     """One task's result whatever happens, so a task that fails never fails
     another; the task's ``finished`` progress line goes out as it ends."""
     try:
-        result = await _one(context, build_env, task, registry, notes, limits, backoff, run_id)
+        result = await _one(context, build_env, task, registry, notes, limits, backoff, run_id, instruments)
     except asyncio.CancelledError:
         raise
     except Exception as exc:
@@ -438,12 +443,15 @@ async def explore(
     limits: ExploreLimits | None = None,
     backoff: Backoff = DEFAULT_BACKOFF,
     max_concurrent: int = 4,
+    instruments: tuple[str, ...] = (),
 ) -> list[Result]:
     """Run ``tasks`` concurrently, at most ``max_concurrent`` at once, each as
     its own exploratory run; one result per task, in task order.
 
     ``build_env(context, run_id)`` builds each task's environment for a run
     already started. ``backoff`` is the wait between model retries.
+    ``instruments`` are those the user's message names: each task's
+    satellite data calls must use one of them.
     """
     if max_concurrent < 1:
         raise ValueError("max_concurrent is at least 1")
@@ -459,6 +467,6 @@ async def explore(
 
     async def bounded(task: ExploreTask, run_id: str) -> Result:
         async with slots:
-            return await _guarded(context, build_env, task, registry, notes, limits, backoff, run_id)
+            return await _guarded(context, build_env, task, registry, notes, limits, backoff, run_id, instruments)
 
     return list(await asyncio.gather(*(bounded(task, run_id) for task, run_id in zip(tasks, run_ids, strict=True))))

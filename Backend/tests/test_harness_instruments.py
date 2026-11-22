@@ -1,12 +1,15 @@
-"""The instrument check on satellite workflow calls."""
+"""The instrument check on satellite workflow calls and exploration's satellite calls."""
 from __future__ import annotations
 
 import unittest
 
-from tta_backend.harness.supervisor.instruments import (
+from tta_backend.harness.capabilities.instruments import (
+    EXPLORE_OTHER,
+    EXPLORE_UNNAMED,
     NEEDS_INSTRUMENT,
     NOT_REGISTERED,
     USER_NAMED,
+    explore_refusal,
     instrument_refusal,
     instruments,
     mentioned,
@@ -54,6 +57,37 @@ class InstrumentTests(unittest.TestCase):
         self.assertIsNone(instrument_refusal("TEMPO", NO2, message))
         self.assertIsNone(instrument_refusal("TROPOMI", NO2, message))
         self.assertIsNotNone(instrument_refusal("OMI", NO2, message))
+
+
+class ExploreInstrumentTests(unittest.TestCase):
+    GET_DATA = "sources.satellite.get_data"
+
+    def test_no_instrument_named_lets_every_call_run(self):
+        self.assertIsNone(explore_refusal(self.GET_DATA, {}, ()))
+        self.assertIsNone(explore_refusal(self.GET_DATA, {"named": "TEMPO"}, ()))
+
+    def test_a_call_leaving_the_choice_to_the_registry_is_refused(self):
+        self.assertEqual(explore_refusal(self.GET_DATA, {"quantity": NO2}, ("TROPOMI",)),
+                         EXPLORE_UNNAMED.format(mentioned="TROPOMI", first="TROPOMI"))
+
+    def test_another_instrument_or_its_product_is_refused(self):
+        user = ("TROPOMI",)
+        self.assertEqual(explore_refusal(self.GET_DATA, {"named": "TEMPO"}, user),
+                         EXPLORE_OTHER.format(mentioned="TROPOMI", named="TEMPO"))
+        self.assertIsNotNone(explore_refusal("sources.satellite.check_availability", {"product": "TEMPO_NO2"}, user))
+        self.assertIsNotNone(explore_refusal("sources.satellite.get_point_series", {"named": "OMI"}, user))
+
+    def test_the_named_instrument_or_its_product_runs(self):
+        user = ("TROPOMI",)
+        for params in ({"named": "TROPOMI"}, {"named": "tropomi annual"}, {"product": "TROPOMI_NO2"}):
+            with self.subTest(params=params):
+                self.assertIsNone(explore_refusal(self.GET_DATA, params, user))
+
+    def test_other_capabilities_and_unregistered_names_are_left_alone(self):
+        self.assertIsNone(explore_refusal("sources.monitors.find", {}, ("TROPOMI",)))
+        self.assertIsNone(explore_refusal("sources.satellite.search", {}, ("TROPOMI",)))
+        # The capability refuses a name it does not know, in its own wording.
+        self.assertIsNone(explore_refusal(self.GET_DATA, {"named": "GOME"}, ("TROPOMI",)))
 
 
 if __name__ == "__main__":

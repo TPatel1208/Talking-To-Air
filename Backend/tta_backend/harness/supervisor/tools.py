@@ -46,6 +46,7 @@ from langgraph.errors import GraphBubbleUp
 from pydantic import ValidationError
 
 from tta_backend.harness.capabilities.definition import Capability
+from tta_backend.harness.capabilities.instruments import instrument_refusal, mentioned
 from tta_backend.harness.capabilities.invoke import invoke
 from tta_backend.harness.capabilities.registry import CapabilityRegistry
 from tta_backend.harness.context.ledger import Ledger
@@ -58,7 +59,6 @@ from tta_backend.harness.specialists.task import ExploreLimits, ExploreTask
 from tta_backend.harness.specialists.tools import failure_view, retry_helps, tool_schema
 from tta_backend.harness.specialists.tools import result_view as capability_view
 from tta_backend.harness.supervisor.answer import dumps, result_view, unavailable_wording, view_of
-from tta_backend.harness.supervisor.instruments import instrument_refusal
 from tta_backend.harness.trace import FailureCategory, Run, RunClosed, RunNotFound, StepFailure, new_run_id
 from tta_backend.harness.workflows.compile import NotRunnable
 from tta_backend.harness.workflows.inputs import input_step_id
@@ -548,7 +548,7 @@ class TurnTools:
             return _refused(split + " Nothing was run.")
         results = await explore(
             self.context, self._build_env, checked, registry=self._capabilities, notes=self._notes,
-            limits=self._explore_limits, backoff=self._backoff,
+            limits=self._explore_limits, backoff=self._backoff, instruments=mentioned(self._message),
         )
         for result in results:
             self._produced(result)

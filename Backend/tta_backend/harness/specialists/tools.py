@@ -27,6 +27,7 @@ from pydantic import ValidationError
 
 from tta_backend.harness.capabilities.definition import Capability
 from tta_backend.harness.capabilities.failures import JobStillRunning
+from tta_backend.harness.capabilities.instruments import explore_refusal
 from tta_backend.harness.capabilities.invoke import invoke
 from tta_backend.harness.capabilities.result import CapabilityResult
 from tta_backend.harness.handles.model import is_handle_id
@@ -183,8 +184,11 @@ class Called:
 class Caller:
     """Runs capability calls for one task: the allowlist check, ``invoke``, and what the task keeps."""
 
-    def __init__(self, env: RunEnv, state: TaskState, notes: NoteCatalogue, parent_seq: int) -> None:
+    def __init__(
+        self, env: RunEnv, state: TaskState, notes: NoteCatalogue, parent_seq: int, *, instruments: tuple[str, ...] = (),
+    ) -> None:
         self._env = env
+        self._instruments = instruments
         self._state = state
         self._notes = notes
         self._parent_seq = parent_seq
@@ -267,6 +271,9 @@ class Caller:
         workflow_only = sorted(WORKFLOW_ONLY_PARAMS & set(params))
         if workflow_only:
             return self._refused(WORKFLOW_PARAM.format(param=workflow_only[0], tool=tool_name(capability)))
+        other = explore_refusal(capability.name, params, self._instruments)
+        if other is not None:
+            return self._refused(other)
         key = call_key(capability, params)
         repeat = self._repeat(capability, key)
         if repeat is not None:

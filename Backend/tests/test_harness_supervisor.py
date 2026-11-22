@@ -347,7 +347,7 @@ class InputTests(SupervisorCase):
         self.assertEqual(await self.f.stores.traces.list_runs("user-a", "conv-1"), [])
 
     async def test_a_satellite_workflow_without_the_instrument_or_with_another_than_the_user_named_runs_nothing(self):
-        from tta_backend.harness.supervisor.instruments import NEEDS_INSTRUMENT, USER_NAMED
+        from tta_backend.harness.capabilities.instruments import NEEDS_INSTRUMENT, USER_NAMED
 
         message = "Map TROPOMI NO2 over New Jersey for June 1 to 3, 2024."
         model = Model(script=[run_map(named=None), run_map(named="TEMPO"), answer("Which instrument?")])

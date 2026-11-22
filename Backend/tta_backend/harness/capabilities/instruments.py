@@ -1,4 +1,4 @@
-"""The instrument a satellite workflow call names.
+"""The instrument a satellite request names.
 
 Every ``run_workflow`` call to a workflow with a ``named`` input must name
 an instrument or product, so the answer can never describe data from a
@@ -6,6 +6,10 @@ different instrument than the one retrieved. It is the one the user named,
 or, when they named none, one the supervisor picks from those that serve
 the quantity. Code checks both: the name must match a registered product,
 and an instrument the user wrote in their message must be the one passed.
+
+Exploration is held to the instrument the user named too: when the message
+names one, a specialist's satellite data call must name it, or a product of
+it, instead of letting the registry choose or switching to another.
 """
 from __future__ import annotations
 
@@ -21,6 +25,18 @@ NEEDS_INSTRUMENT = (
 )
 NOT_REGISTERED = "'{named}' names no registered product or instrument; pass one of: {instruments}."
 USER_NAMED = "The user named {mentioned}; pass named as they wrote it, not '{named}'."
+EXPLORE_UNNAMED = (
+    "The user named {mentioned}; pass named: '{first}' so this call uses it. If it cannot serve the request, "
+    "say so and offer another instrument instead of using one."
+)
+EXPLORE_OTHER = (
+    "The user named {mentioned}, not '{named}'. Use {mentioned}; if it cannot serve the request, say so and "
+    "offer another instrument instead of using one."
+)
+# The satellite calls that choose a product to read data from.
+DATA_CALLS = frozenset({
+    "sources.satellite.get_data", "sources.satellite.get_point_series", "sources.satellite.check_availability",
+})
 _QUOTED_CHARS = 60
 
 
@@ -76,7 +92,30 @@ def instrument_refusal(
     user = mentioned(message, entries)
     if not user:
         return None
-    chosen = {part.strip().lower() for key in keys for part in re.split(r"[/+]", entries[key].instrument or "")}
-    if any(word.lower() in chosen for word in user):
+    if any(word.lower() in _instrument_words(keys, entries) for word in user):
         return None
     return USER_NAMED.format(mentioned=" or ".join(user), named=quoted)
+
+
+def _instrument_words(keys: tuple[str, ...], entries: Mapping[str, CollectionConfig]) -> set[str]:
+    return {part.strip().lower() for key in keys for part in re.split(r"[/+]", entries[key].instrument or "")}
+
+
+def explore_refusal(
+    capability: str, params: Mapping[str, object], user: tuple[str, ...],
+    registry: Mapping[str, CollectionConfig] | None = None,
+) -> str | None:
+    """Why a specialist's call ``capability`` with ``params`` may not run while the user named the
+    instruments ``user``, or None when it may. A name matching no registered product is left to
+    the capability, which refuses it with its own wording."""
+    if not user or capability not in DATA_CALLS:
+        return None
+    entries = registry if registry is not None else load_registry()
+    chosen = params.get("product") or params.get("named")
+    said = " or ".join(user)
+    if not isinstance(chosen, str) or not chosen.strip():
+        return EXPLORE_UNNAMED.format(mentioned=said, first=user[0])
+    keys, _ = match_named(chosen, entries)
+    if not keys or any(word.lower() in _instrument_words(keys, entries) for word in user):
+        return None
+    return EXPLORE_OTHER.format(mentioned=said, named=" ".join(chosen.split())[:_QUOTED_CHARS])

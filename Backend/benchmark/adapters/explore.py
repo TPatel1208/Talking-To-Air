@@ -92,6 +92,7 @@ class ExploreAdapter:
         if case.bundle is None:
             raise NotCovered(case.id)
 
+        from tta_backend.harness.capabilities.instruments import mentioned
         from tta_backend.harness.models import DEFAULT_BACKOFF
         from tta_backend.harness.specialists import ExploreTask, explore
 
@@ -106,6 +107,7 @@ class ExploreAdapter:
                 [result] = await explore(
                     boundary.context, boundary.build_env, [task],
                     registry=registry, notes=notes, limits=self._limits, backoff=DEFAULT_BACKOFF,
+                    instruments=mentioned(case.prompt),
                 )
             except Exception as exc:
                 # The type name only: an exception's text can carry values or secrets.

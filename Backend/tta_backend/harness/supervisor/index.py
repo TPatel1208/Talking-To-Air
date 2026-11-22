@@ -1,10 +1,10 @@
 """The supervisor's index of workflows, exploration bundles and capability groups."""
 from __future__ import annotations
 
+from tta_backend.harness.capabilities.instruments import instruments
 from tta_backend.harness.capabilities.registry import CapabilityRegistry
 from tta_backend.harness.capabilities.sources.satellite import QUANTITIES
 from tta_backend.harness.specialists.bundles import BUNDLES
-from tta_backend.harness.supervisor.instruments import instruments
 from tta_backend.harness.workflows.loader import WorkflowCatalogue
 from tta_backend.harness.workflows.spec import Input, WorkflowSpec
 

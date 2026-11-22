@@ -325,13 +325,13 @@ class ExploreCase(unittest.IsolatedAsyncioTestCase):
 
     async def go(self, *tasks: ExploreTask, script: list[Turn] | None = None, model: ScriptedChatModel | None = None,
                   models: Any = "default", limits: ExploreLimits | None = None,
-                  registry: CapabilityRegistry | None = None) -> list[Result]:
+                  registry: CapabilityRegistry | None = None, instruments: tuple[str, ...] = ()) -> list[Result]:
         self.model = model or Model(script=list(script or []))
         if models == "default":
             models = ScriptedModels({"explore": choice_of(self.model)})
         return await explore(
             self.context, self.build_env(models), list(tasks), registry=registry or self.registry, notes=NOTES,
-            limits=limits, backoff=NO_BACKOFF,
+            limits=limits, backoff=NO_BACKOFF, instruments=instruments,
         )
 
     async def entries(self, result: Result) -> list[Any]:
@@ -1368,6 +1368,11 @@ class RepeatedCallTests(ExploreCase):
         self.assertEqual(self.fakes.ran, ["flaky"])
 
 
+class NamedParams(Params):
+    named: str | None = None
+    product: str | None = None
+
+
 class ApprovedParams(Params):
     label: str = "x"
     approved: list[str] | str = "registry_default"
@@ -1405,6 +1410,41 @@ class WorkflowOnlyParamTests(ExploreCase):
         self.assertEqual(ran["status"], "done")
         self.assertEqual(used, ["registry_default"])
         self.assertEqual(await self.uses(result), ["sources.areas.resolve", "sources.fake.choose"])
+
+    async def test_a_satellite_call_must_use_the_instrument_the_user_named(self):
+        from tta_backend.harness.capabilities.instruments import EXPLORE_OTHER, EXPLORE_UNNAMED
+
+        used: list[Any] = []
+
+        async def get_data(call: Call[NamedParams]) -> CapabilityResult:
+            used.append(call.params.named)
+            return CapabilityResult(status="done", summary={"days": 31})
+
+        self.registry.add_group(Group("sources.satellite", "Fake satellite data."))
+        self.registry.register(fake_capability("sources.satellite.get_data", NamedParams, get_data))
+        [result] = await self.go(task(places=("NJ",)), instruments=("TROPOMI",), script=[
+            tool_call("sources__satellite__get_data", {}),
+            tool_call("sources__satellite__get_data", {"named": "TEMPO"}),
+            tool_call("sources__satellite__get_data", {"named": "TROPOMI"}),
+            final(),
+        ])
+        unnamed, other, ran = results(self.model.received[3])
+        self.assertEqual(unnamed, {"status": "refused", "reason": EXPLORE_UNNAMED.format(mentioned="TROPOMI", first="TROPOMI")})
+        self.assertEqual(other, {"status": "refused", "reason": EXPLORE_OTHER.format(mentioned="TROPOMI", named="TEMPO")})
+        self.assertEqual(ran["status"], "done")
+        self.assertEqual(used, ["TROPOMI"])
+
+    async def test_with_no_instrument_named_any_satellite_call_runs(self):
+        used: list[Any] = []
+
+        async def get_data(call: Call[NamedParams]) -> CapabilityResult:
+            used.append(call.params.named)
+            return CapabilityResult(status="done", summary={"days": 31})
+
+        self.registry.add_group(Group("sources.satellite", "Fake satellite data."))
+        self.registry.register(fake_capability("sources.satellite.get_data", NamedParams, get_data))
+        await self.go(task(places=("NJ",)), script=[tool_call("sources__satellite__get_data", {"named": "TEMPO"}), final()])
+        self.assertEqual(used, ["TEMPO"])
 
     def test_a_required_workflow_only_parameter_cannot_be_hidden(self):
         class Required(Params):
