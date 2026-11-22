@@ -146,6 +146,47 @@ class LoaderTests(unittest.TestCase):
             )}, registry, DATASETS)
         self.assertIn("with.product takes a value, not a handle", str(caught.exception))
 
+    def test_max_items_is_a_confirm_list_bound_from_one_to_the_answer_limit(self):
+        registry = fake_registry(Script())
+
+        def load(ask: dict[str, Any]) -> None:
+            load_specs({"asks": spec(
+                [{"id": "days", "ask": ask}, make("after", product="$days")], {"data": ["$after"]}, inputs={},
+            )}, registry, DATASETS)
+
+        load({"kind": "confirm_list", "question": "Which?", "items": ["2024-06-01"], "max_items": 31})
+        for bad, wording in (
+            ({"kind": "pick_many", "question": "Which?", "options": ["a"], "max_items": 2}, "only a confirm_list question has max_items"),
+            ({"kind": "confirm_list", "question": "Which?", "items": ["a"], "max_items": 0}, f"max_items is a whole number from 1 to {MAX_ITEMS}"),
+            ({"kind": "confirm_list", "question": "Which?", "items": ["a"], "max_items": MAX_ITEMS + 1}, "max_items is a whole number"),
+        ):
+            with self.subTest(bad=bad), self.assertRaises(SpecErrors) as caught:
+                load(bad)
+            self.assertIn(wording, str(caught.exception))
+
+
+class MaxItemsTests(unittest.TestCase):
+    DAYS = [f"2024-06-{day:02d}" for day in range(1, 31)] + ["2024-07-01", "2024-07-02"]
+
+    def test_the_payload_carries_max_items_only_on_a_confirm_list(self):
+        self.assertEqual(asked("confirm_list", items=self.DAYS[:3], max_items=31)["max_items"], 31)
+        self.assertNotIn("max_items", asked("confirm_list", items=self.DAYS[:3]))
+        self.assertNotIn("max_items", asked("pick_many", options=["a"], max_items=31))
+
+    def test_a_longer_answer_is_refused_with_the_limit_in_the_wording(self):
+        question = asked("confirm_list", items=self.DAYS[:10], max_items=31)
+
+        self.assertEqual(len(check_answer(question, self.DAYS[:31])), 31)  # type: ignore[arg-type]
+        with self.assertRaises(AnswerRejected) as caught:
+            check_answer(question, self.DAYS)
+        self.assertEqual(caught.exception.reason, "The answer must be a list of 1 to 31 ISO dates, like 2024-06-01.")
+
+    def test_no_usable_max_items_falls_back_to_the_answer_limit(self):
+        for limit in (None, 0, True, MAX_ITEMS + 1, "31"):
+            with self.subTest(limit=limit):
+                question = {**asked("confirm_list", items=self.DAYS[:3]), "max_items": limit}
+                self.assertEqual(len(check_answer(question, self.DAYS)), len(self.DAYS))  # type: ignore[arg-type]
+
 
 if __name__ == "__main__":
     unittest.main()

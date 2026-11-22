@@ -47,6 +47,13 @@ class Outcome:
     findings: list = field(default_factory=list)
     # Names of the tool calls the system made itself; diagnostic, never scored.
     tool_calls: list[str] = field(default_factory=list)
+    # The questions the user answered through the app's control, as each run asked them
+    # (run_id, step, kind, and items or options), and what was sent: run_id, step, value, and
+    # calls_before, how many boundary calls had been made when it was sent.
+    questions: list[dict[str, Any]] = field(default_factory=list)
+    answers: list[dict[str, Any]] = field(default_factory=list)
+    # Each run's status at the end of the last turn it took part in.
+    run_statuses: dict[str, str] = field(default_factory=dict)
     # Model tokens the provider reported, keyed by (model, agent, kind) where
     # kind is "input", "output", "cache_read" or "cache_creation" (the last two are
     # shares of input). Never scored.

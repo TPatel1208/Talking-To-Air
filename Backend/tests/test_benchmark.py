@@ -301,6 +301,7 @@ class CaseStructureTests(unittest.TestCase):
                 "e2e_cross_source": 1,
                 "e2e_routing": 2,
                 "region_refusal": 2,
+                "event_comparison": 3,
             },
         )
 
@@ -537,7 +538,7 @@ class RunSuiteTests(unittest.IsolatedAsyncioTestCase):
 
         results = await run_suite(_FakeAdapter(on_run=log_success), self.volume)
 
-        self.assertEqual(len(results), 20)
+        self.assertEqual(len(results), 23)
 
     async def test_a_case_over_its_category_budget_fails_even_when_every_check_passes(self):
         from benchmark.cases import BenchmarkCase
@@ -968,6 +969,178 @@ class CoreImportsTests(unittest.TestCase):
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
 
+
+class MultiTurnTests(unittest.TestCase):
+    QUESTION = {
+        "run_id": "run_1", "step": "days", "kind": "confirm_list", "question": "Confirm.",
+        "items": ["2024-06-03", "2024-06-04", "2024-06-05"],
+    }
+
+    def test_an_answer_as_offered_sends_the_items_back_less_those_left_out(self):
+        from benchmark.cases import ScriptedAnswer
+
+        self.assertEqual(ScriptedAnswer("days").value_for(self.QUESTION), self.QUESTION["items"])
+        self.assertEqual(
+            ScriptedAnswer("days", without=("2024-06-04",)).value_for(self.QUESTION), ["2024-06-03", "2024-06-05"],
+        )
+        self.assertEqual(ScriptedAnswer("days", value=["2024-07-01"]).value_for(self.QUESTION), ["2024-07-01"])
+
+    def test_each_scripted_answer_goes_once_to_the_question_on_its_step(self):
+        from benchmark.cases import AnswerScript, ScriptedAnswer
+
+        script = AnswerScript((ScriptedAnswer("product", value="TEMPO_NO2"), ScriptedAnswer("days")))
+
+        self.assertIsNone(script.take(None))
+        self.assertIsNone(script.take({**self.QUESTION, "step": "other"}))
+        self.assertEqual(script.take(self.QUESTION), ("run_1", "days", self.QUESTION["items"]))
+        self.assertIsNone(script.take(self.QUESTION))
+        self.assertEqual(script.take({**self.QUESTION, "step": "product"}), ("run_1", "product", "TEMPO_NO2"))
+
+    def test_a_case_spans_turns_only_when_it_scripts_answers(self):
+        from benchmark.cases import BenchmarkCase
+
+        fields = {field.name: field.default for field in dataclasses.fields(BenchmarkCase)}
+        self.assertEqual(fields["answers"], ())
+
+    def test_retrieved_exactly_days_reads_every_retrieval_range_together(self):
+        from benchmark.checks import RetrievedExactlyDays
+
+        check = RetrievedExactlyDays((date(2024, 6, 1), date(2024, 6, 2), date(2024, 6, 4)))
+        calls = [
+            _call("retrieve_subset", time_range="2024-06-01T00:00:00Z/2024-06-02T23:59:59Z"),
+            _call("retrieve_subset", time_range="2024-06-04T00:00:00Z/2024-06-04T23:59:59Z"),
+            _call("check_coverage", time_range="2024-06-09T00:00:00Z/2024-06-09T23:59:59Z"),
+        ]
+
+        self.assertTrue(check.evaluate(_outcome(boundary_calls=calls)).passed)
+        missing = check.evaluate(_outcome(boundary_calls=calls[:1]))
+        self.assertFalse(missing.passed)
+        self.assertIn("missing ['2024-06-04']", missing.reason)
+        extra = check.evaluate(_outcome(boundary_calls=[*calls, _call("retrieve_subset", time_range="2024-06-05/2024-06-05")]))
+        self.assertIn("extra ['2024-06-05']", extra.reason)
+
+    def test_answered_then_done_needs_the_question_and_a_done_run(self):
+        from benchmark.checks import AnsweredThenDone
+
+        check = AnsweredThenDone("days", "confirm_list")
+        asked = [{"run_id": "run_1", "step": "days", "kind": "confirm_list", "items": []}]
+
+        self.assertTrue(check.evaluate(_outcome(questions=asked, run_statuses={"run_1": "done"})).passed)
+        stopped = check.evaluate(_outcome(questions=asked, run_statuses={"run_1": "insufficient_evidence"}))
+        self.assertFalse(stopped.passed)
+        self.assertIn("ended insufficient_evidence", stopped.reason)
+        self.assertFalse(check.evaluate(_outcome(run_statuses={"run_1": "done"})).passed)
+        other_kind = [{**asked[0], "kind": "pick_one"}]
+        self.assertFalse(check.evaluate(_outcome(questions=other_kind, run_statuses={"run_1": "done"})).passed)
+
+    def test_retrieved_exactly_days_fails_on_a_day_retrieved_twice(self):
+        from benchmark.checks import RetrievedExactlyDays
+
+        day = "2024-06-01T00:00:00Z/2024-06-01T23:59:59Z"
+        twice = RetrievedExactlyDays((date(2024, 6, 1),)).evaluate(
+            _outcome(boundary_calls=[_call("retrieve_subset", time_range=day), _call("retrieve_subset", time_range=day)]),
+        )
+
+        self.assertFalse(twice.passed)
+        self.assertIn("repeated ['2024-06-01']", twice.reason)
+
+    def around_answer(self, before: list[str], after: list[str]) -> Outcome:
+        calls = [_call("check_coverage", time_range="2024-07-04/2024-07-04")]
+        calls += [_call("retrieve_subset", time_range=f"{day}T00:00:00Z/{day}T23:59:59Z") for day in before]
+        answers = [{"run_id": "run_1", "step": "days", "value": [], "calls_before": len(calls)}]
+        calls += [_call("retrieve_subset", time_range=f"{day}T00:00:00Z/{day}T23:59:59Z") for day in after]
+        return _outcome(boundary_calls=calls, answers=answers)
+
+    def test_retrieved_around_answer_tells_the_subject_from_the_comparison_days(self):
+        from benchmark.checks import RetrievedAroundAnswer
+
+        check = RetrievedAroundAnswer("days", before=(date(2024, 7, 4),), after=(date(2024, 7, 1), date(2024, 7, 2)))
+
+        self.assertTrue(check.evaluate(self.around_answer(["2024-07-04"], ["2024-07-01", "2024-07-02"])).passed)
+        bad = {
+            # The event day mixed into the comparison retrieval.
+            "event in the baseline": (["2024-07-04"], ["2024-07-01", "2024-07-02", "2024-07-04"], "extra ['2024-07-04']"),
+            # The event retrieved only after the answer, as if it were a comparison day.
+            "event after the answer": ([], ["2024-07-04", "2024-07-01", "2024-07-02"], "missing ['2024-07-04']"),
+            "event retrieved twice": (["2024-07-04", "2024-07-04"], ["2024-07-01", "2024-07-02"], "repeated ['2024-07-04']"),
+            "a confirmed day missing": (["2024-07-04"], ["2024-07-01"], "missing ['2024-07-02']"),
+            "a removed day retrieved": (["2024-07-04"], ["2024-07-01", "2024-07-02", "2024-07-08"], "extra ['2024-07-08']"),
+        }
+        for name, (before, after, why) in bad.items():
+            with self.subTest(name):
+                result = check.evaluate(self.around_answer(before, after))
+                self.assertFalse(result.passed)
+                self.assertIn(why, result.reason)
+        unanswered = check.evaluate(_outcome(boundary_calls=self.around_answer(["2024-07-04"], []).boundary_calls))
+        self.assertFalse(unanswered.passed)
+        self.assertIn("no answer on days was sent", unanswered.reason)
+
+    def test_finding_reported_needs_the_value_within_its_tolerance(self):
+        from benchmark.checks import FindingReported
+
+        findings = [{"name": "baseline_days", "value": 8}, {"name": "mean_difference", "value": 1.0000000000000007}]
+
+        self.assertTrue(FindingReported("baseline_days", 8).evaluate(_outcome(findings=findings)).passed)
+        self.assertFalse(FindingReported("baseline_days", 10).evaluate(_outcome(findings=findings)).passed)
+        self.assertTrue(FindingReported("mean_difference", 1.0, tolerance=1e-6).evaluate(_outcome(findings=findings)).passed)
+        self.assertFalse(FindingReported("mean_difference", 1.0).evaluate(_outcome(findings=findings)).passed)
+        flipped = [{"name": "mean_difference", "value": -1.0}]
+        result = FindingReported("mean_difference", 1.0, tolerance=1e-6).evaluate(_outcome(findings=flipped))
+        self.assertFalse(result.passed)
+        self.assertIn("not 1.0 within 1e-06", result.reason)
+        self.assertFalse(FindingReported("absent", 1).evaluate(_outcome(findings=findings)).passed)
+        self.assertFalse(FindingReported("baseline_days", 1).evaluate(_outcome(findings=[{"name": "baseline_days", "value": True}])).passed)
+
+    def test_the_too_few_days_pattern_is_the_stops_own_wording(self):
+        from benchmark.cases import TOO_FEW_DAYS_PATTERN, build_cases
+        from benchmark.fake_earthdata import HandleVolume
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            case = {c.id: c for c in build_cases(HandleVolume(tmp))}["event_baseline_too_few_days"]
+        check = next(c for c in case.checks if isinstance(c, AnswerMatches))
+        self.assertEqual(check.pattern, TOO_FEW_DAYS_PATTERN)
+
+        stop = (
+            "Only 3 of the 10 candidate days have TEMPO_NO2 data over New Jersey (U.S. state); at least 5 are needed "
+            "for a baseline."
+        )
+        self.assertTrue(check.evaluate(_outcome(answer_text=f"Draft workflow\n{stop}")).passed)
+        for loose in (
+            "Only 3 days had data, so there is too little for a baseline.",
+            "Too few comparison days have data.",
+            stop.replace("Only 3 of the 10", "Only 4 of the 10"),
+            stop.replace("at least 5", "at least 3"),
+        ):
+            with self.subTest(loose=loose):
+                self.assertFalse(check.evaluate(_outcome(answer_text=loose)).passed)
+
+    def test_the_event_cases_answer_the_days_and_check_the_retrieval_and_the_map(self):
+        from benchmark.cases import EVENT_BASELINE_DAYS, EVENT_DAY, EVENT_DAYS_REMOVED, SPARSE_EVENT_DAY, build_cases
+        from benchmark.checks import AnsweredThenDone, FindingReported, RetrievedAroundAnswer, RetrievedExactlyDays
+        from benchmark.fake_earthdata import HandleVolume
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            cases = {case.id: case for case in build_cases(HandleVolume(tmp))}
+        for case_id, kept in (
+            ("event_baseline_confirmed", EVENT_BASELINE_DAYS),
+            ("event_baseline_days_edited", tuple(d for d in EVENT_BASELINE_DAYS if d not in EVENT_DAYS_REMOVED)),
+        ):
+            with self.subTest(case=case_id):
+                case = cases[case_id]
+                [scripted] = case.answers
+                self.assertEqual(scripted.step, "days")
+                self.assertIsNone(case.bundle)
+                self.assertIn(AnsweredThenDone("days", "confirm_list"), case.checks)
+                self.assertIn(RetrievedAroundAnswer(
+                    "days", before=(date.fromisoformat(EVENT_DAY),), after=tuple(date.fromisoformat(d) for d in kept),
+                ), case.checks)
+                self.assertIn(FindingReported("baseline_days", len(kept)), case.checks)
+                self.assertIn(FindingReported("mean_difference", 1.0, tolerance=1e-6), case.checks)
+                self.assertIn(ChartProduced(), case.checks)
+        self.assertEqual(len(cases["event_baseline_days_edited"].answers[0].without), 2)
+        sparse = cases["event_baseline_too_few_days"]
+        self.assertEqual(sparse.answers, ())
+        self.assertIn(RetrievedExactlyDays((date.fromisoformat(SPARSE_EVENT_DAY),)), sparse.checks)
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,7 +8,7 @@ from tta_backend.harness.capabilities.catalogue import build_registry
 from tta_backend.harness.specialists.bundles import BUNDLES, Bundle, UnknownBundle, get_bundle
 
 # Capabilities deliberately in no bundle.
-UNREACHABLE: frozenset[str] = frozenset()
+UNREACHABLE: frozenset[str] = frozenset({"operations.check_comparison_days", "operations.select_comparison_days"})
 
 SNAPSHOT = {
     "analyse": [

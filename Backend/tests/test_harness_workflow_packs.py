@@ -25,6 +25,11 @@ ORDERS: dict[str, tuple[str, ...]] = {
     "smoke-map": ("extent", "figure"),
     "period-comparison": ("first_data", "second_data", "first_mean", "second_mean", "diff", "figure", "stat"),
     "satellite-vs-monitor": ("find", "data", "readings", "pair", "figure_series", "monitor_values", "figure_map"),
+    "event-vs-baseline": (
+        "event", "candidates", "available", "no_record", "too_few_available", "days", "checked", "too_few_confirmed",
+        "baseline",
+        "too_few_kept", "event_mean", "baseline_mean", "diff", "figure",
+    ),
 }
 CONNECTORS: dict[str, frozenset[str]] = {
     "map": frozenset({"earthdata"}),
@@ -34,6 +39,7 @@ CONNECTORS: dict[str, frozenset[str]] = {
     "smoke-map": frozenset(),
     "period-comparison": frozenset({"earthdata"}),
     "satellite-vs-monitor": frozenset({"earthdata", "epa_aqs"}),
+    "event-vs-baseline": frozenset({"earthdata"}),
 }
 
 # What each capability a spec reads sets, read from the capability code. A name under
@@ -51,6 +57,20 @@ FIELDS: dict[str, dict[str, frozenset[str]]] = {
             "valid_fraction", "valid_cells", "region_cells", "qa_status", "qa_pass_rate", "days_requested",
             "days_with_data", "missing_days", "missing_days_listed",
         }),
+    },
+    "sources.satellite.check_availability": {
+        "values": frozenset({
+            "area_name", "period_text", "available", "situation", "ruled_out", "granules", "days_with_data",
+            "days_without_data",
+        }),
+    },
+    "operations.select_comparison_days": {
+        "values": frozenset({
+            "days", "event_date", "day_type", "window_days", "limit", "latest", "selection", "situation",
+        }),
+    },
+    "operations.check_comparison_days": {
+        "values": frozenset({"days", "kept", "confirmed", "dropped", "event_date", "latest"}),
     },
     "sources.satellite.get_point_series": {
         "summary": frozenset({"points", "days_with_data", "first", "last"}),

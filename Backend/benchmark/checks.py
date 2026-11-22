@@ -301,3 +301,113 @@ class AqsDateRelativeToClock:
         if set(accepted).intersection(used):
             return CheckResult(True, f"an AQS call used {' or '.join(accepted)}")
         return CheckResult(False, f"no AQS call used {' or '.join(accepted)}; saw {used}")
+
+
+def _days_of(time_range: object) -> set[date]:
+    bounds = _range_bounds(time_range)
+    if bounds is None:
+        return set()
+    start, end = bounds
+    return {start + timedelta(days=n) for n in range((end - start).days + 1)}
+
+
+def _covered_once(calls: list[BoundaryCall], days: tuple[date, ...], what: str) -> CheckResult:
+    """Whether ``calls`` ask for exactly ``days``, each day in one call only."""
+    counts: dict[date, int] = {}
+    for call in calls:
+        for day in _days_of(call.args.get("time_range")):
+            counts[day] = counts.get(day, 0) + 1
+    wanted = set(days)
+    missing = sorted(day.isoformat() for day in wanted - counts.keys())
+    extra = sorted(day.isoformat() for day in counts.keys() - wanted)
+    repeated = sorted(day.isoformat() for day, count in counts.items() if count > 1)
+    if not (missing or extra or repeated):
+        return CheckResult(True, f"{what} covered exactly the {len(wanted)} days expected, each once")
+    return CheckResult(
+        False, f"{what} days differ from those expected: missing {missing}, extra {extra}, repeated {repeated}",
+    )
+
+
+@dataclass(frozen=True)
+class RetrievedExactlyDays:
+    """The data service was asked to retrieve exactly ``days``, each in one retrieval call only."""
+
+    days: tuple[date, ...]
+    tool: str = "retrieve_subset"
+
+    def evaluate(self, outcome: Outcome) -> CheckResult:
+        return _covered_once(_calls_to(outcome, self.tool), self.days, self.tool)
+
+
+@dataclass(frozen=True)
+class RetrievedAroundAnswer:
+    """Before the user answered on ``step``, the data service was asked to retrieve exactly ``before``;
+    after it, exactly ``after``; each day once. So what the answer chose is told apart from what was
+    retrieved without it."""
+
+    step: str
+    before: tuple[date, ...]
+    after: tuple[date, ...]
+    tool: str = "retrieve_subset"
+
+    def evaluate(self, outcome: Outcome) -> CheckResult:
+        sent = next((a for a in outcome.answers if a.get("step") == self.step), None)
+        if sent is None or not isinstance(sent.get("calls_before"), int):
+            return CheckResult(False, f"no answer on {self.step} was sent, so nothing was retrieved after one")
+        split = int(sent["calls_before"])
+        earlier = [c for c in outcome.boundary_calls[:split] if c.tool == self.tool]
+        later = [c for c in outcome.boundary_calls[split:] if c.tool == self.tool]
+        first = _covered_once(earlier, self.before, f"{self.tool} before the answer")
+        if not first.passed:
+            return first
+        second = _covered_once(later, self.after, f"{self.tool} after the answer")
+        if not second.passed:
+            return second
+        return CheckResult(True, f"{first.reason}; {second.reason}")
+
+
+@dataclass(frozen=True)
+class AnsweredThenDone:
+    """A run asked the user on ``step`` (a question of ``kind``), was answered there, and then finished done."""
+
+    step: str
+    kind: str | None = None
+
+    def evaluate(self, outcome: Outcome) -> CheckResult:
+        asked = [q for q in outcome.questions if q.get("step") == self.step]
+        if not asked:
+            seen = [q.get("step") for q in outcome.questions]
+            return CheckResult(False, f"no run asked the user on {self.step}; questions answered: {seen}")
+        for question in asked:
+            if self.kind is not None and question.get("kind") != self.kind:
+                continue
+            status = outcome.run_statuses.get(str(question.get("run_id")))
+            if status == "done":
+                return CheckResult(True, f"the run asked on {self.step}, was answered and finished done")
+            return CheckResult(False, f"the run asked on {self.step} and was answered, but ended {status}")
+        return CheckResult(False, f"the question on {self.step} was not a {self.kind} question")
+
+
+@dataclass(frozen=True)
+class FindingReported:
+    """The answer reports a finding named ``name`` equal to ``value``, within ``tolerance`` for a number."""
+
+    name: str
+    value: float | int | str
+    tolerance: float = 0.0
+
+    def _matches(self, found: object) -> bool:
+        if isinstance(found, bool):
+            return False
+        if isinstance(self.value, str) or not isinstance(found, int | float):
+            return found == self.value
+        return abs(found - self.value) <= self.tolerance
+
+    def evaluate(self, outcome: Outcome) -> CheckResult:
+        found = [f.get("value") for f in outcome.findings if isinstance(f, dict) and f.get("name") == self.name]
+        if not found:
+            return CheckResult(False, f"no finding named {self.name} was reported")
+        if any(self._matches(value) for value in found):
+            return CheckResult(True, f"the finding {self.name} was {self.value!r}")
+        within = f" within {self.tolerance:g}" if self.tolerance else ""
+        return CheckResult(False, f"the finding {self.name} was {found}, not {self.value!r}{within}")

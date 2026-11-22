@@ -50,6 +50,7 @@ from pydantic import (
 
 from tta_backend.harness.handles.model import HandleKind
 from tta_backend.harness.results import Mode
+from tta_backend.harness.workflows.answers import MAX_ITEMS as MAX_ANSWER_ITEMS
 from tta_backend.harness.workflows.expressions import (
     MAX_DEPTH,
     NAME,
@@ -354,6 +355,8 @@ class AskSpec(_Model):
     question: str
     options: JsonValue = None
     items: JsonValue = None
+    # The most items a confirm_list answer may hold, so a list too long for the step reading it is refused as an answer.
+    max_items: int | None = None
 
     @field_validator("question")
     @classmethod
@@ -375,6 +378,11 @@ class AskSpec(_Model):
                 raise ValueError("a confirm_list question has items and no options")
         elif self.options is not None or self.items is not None:
             raise ValueError("a text question has no options or items")
+        if self.max_items is not None:
+            if self.kind != "confirm_list":
+                raise ValueError("only a confirm_list question has max_items")
+            if isinstance(self.max_items, bool) or not 1 <= self.max_items <= MAX_ANSWER_ITEMS:
+                raise ValueError(f"max_items is a whole number from 1 to {MAX_ANSWER_ITEMS}")
         return self
 
 

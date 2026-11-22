@@ -156,6 +156,51 @@ class HarnessAdapterRunTests(unittest.TestCase):
         self.assertFalse(unexpecting.done)
         self.assertIn("stopped to ask", unexpecting.unfinished)
 
+    def test_a_case_with_a_scripted_answer_sends_it_through_the_question_control_and_scores_the_last_turn(self):
+        from benchmark.cases import EVENT_BASELINE_DAYS, EVENT_DAY, EVENT_DAYS_REMOVED
+        from benchmark.scoring import score
+        from tta_backend.harness.testing import answer, tool_call
+
+        holder = {}
+
+        def models(case):
+            holder["case"] = case
+            return _models([
+                tool_call("run_workflow", {"name": case.workflow, "inputs": case.inputs_for(date.today())},
+                          usage=(500, 50)),
+                answer("Please confirm the comparison days.", usage=(600, 20)),
+                answer("The event day was higher than the baseline.", usage=(900, 40)),
+            ])
+
+        outcome = _run("event_baseline_days_edited", models)
+        kept = [day for day in EVENT_BASELINE_DAYS if day not in EVENT_DAYS_REMOVED]
+
+        self.assertTrue(outcome.done, outcome.unfinished or outcome.error)
+        [question] = outcome.questions
+        self.assertEqual((question["step"], question["kind"]), ("days", "confirm_list"))
+        [sent] = outcome.answers
+        self.assertEqual({k: sent[k] for k in ("run_id", "step", "value")}, {"run_id": question["run_id"], "step": "days", "value": kept})
+        # The event was retrieved in the first turn, before the answer was sent.
+        before = [c for c in outcome.boundary_calls[:sent["calls_before"]] if c.tool == "retrieve_subset"]
+        self.assertEqual([c.args["time_range"][:10] for c in before], [EVENT_DAY])
+        self.assertEqual(outcome.run_statuses[question["run_id"]], "done")
+        self.assertIn("The event day was higher than the baseline.", outcome.answer_text)
+        self.assertNotIn("Please confirm the comparison days.", outcome.answer_text)
+        self.assertEqual({f["name"]: f["value"] for f in outcome.findings}["baseline_days"], len(kept))
+        retrieved = sorted(c.args["time_range"][:10] for c in outcome.boundary_calls if c.tool == "retrieve_subset")
+        self.assertEqual(retrieved, sorted([EVENT_DAY, *kept]))
+        # Both turns' supervisor tokens are counted.
+        self.assertEqual(outcome.tokens[(SUPERVISOR_MODEL, "supervisor", "input")], 2000)
+        self.assertIn("render.map", outcome.tool_calls)
+        scored = score(holder["case"], outcome, harness=True)
+        self.assertTrue(scored.passed, scored.first_failure and scored.first_failure.reason)
+
+    def test_answer_message_shows_a_list_as_the_transcript_does(self):
+        from benchmark.adapters.harness import answer_message
+
+        self.assertEqual(answer_message(["2024-06-01", "2024-06-02"]), "2024-06-01, 2024-06-02")
+        self.assertEqual(answer_message("confirm"), "confirm")
+
     def test_every_case_is_covered(self):
         from benchmark.adapters.harness import HarnessAdapter
 

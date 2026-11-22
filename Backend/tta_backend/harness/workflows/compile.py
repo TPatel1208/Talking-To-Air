@@ -928,7 +928,7 @@ class _StepNodes:
         listed = list(offered or ())
         payload = question_payload(
             env.run_id, self.id, ask.kind, ask.question,
-            options=listed if picks else (), items=() if picks else listed,
+            options=listed if picks else (), items=() if picks else listed, max_items=ask.max_items,
         )
         entry = {"kind": ask.kind, "question": ask.question}
         if context.resumed.get(self.id) is None:

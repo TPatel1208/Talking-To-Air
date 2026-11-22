@@ -201,7 +201,7 @@ async def _pair(call: Call[PairParams]) -> CapabilityResult:
     grid: GridInput = await open_grid_input(call, "grid")
     if not grid.has_time:
         raise refuse(call, "no_time_axis", param="grid")
-    readings_record, monitors_record = call.handle("readings"), call.handle("monitors")
+    readings_record = call.handle("readings")
     quantity = grid.record.descriptor.quantity
     pollutant = pollutant_for(readings_record.descriptor.quantity)
     if quantity not in ACCEPTED_PAIRS or ACCEPTED_PAIRS[quantity] != pollutant:

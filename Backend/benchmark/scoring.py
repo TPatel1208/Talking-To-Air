@@ -10,8 +10,8 @@ from benchmark.outcome import Outcome
 from benchmark.pricing import CostEstimate, estimate_cost
 
 # Passing needs this many of TOTAL_CASES. Provisional until a live run confirms it.
-PASS_THRESHOLD = 17
-TOTAL_CASES = 20
+PASS_THRESHOLD = 20
+TOTAL_CASES = 23
 
 # Per-category wall-clock budgets in seconds. They apply against the fake data
 # service, so they measure the system's own overhead, not NASA's. A case over
@@ -34,6 +34,8 @@ CATEGORY_BUDGETS: dict[str, float] = {
     "e2e_cross_source": 90.0,
     "e2e_routing": 50.0,
     "region_refusal": 45.0,
+    # Two turns, the second answering the first's question; not measured on the chat system, so provisional.
+    "event_comparison": 90.0,
 }
 
 

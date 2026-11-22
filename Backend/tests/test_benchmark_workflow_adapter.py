@@ -15,6 +15,7 @@ from pathlib import Path
 
 from benchmark.cases import DAILY_UNAVAILABLE_PATTERN, BenchmarkCase, build_cases
 from benchmark.checks import Completed
+from benchmark.scoring import TOTAL_CASES
 
 REQUIRED_MODULES = ["langchain_mcp_adapters", "fastmcp", "uvicorn", "xarray", "zarr", "pyarrow", "langgraph"]
 _MISSING_DEPENDENCIES = any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES)
@@ -33,6 +34,9 @@ PLACES = {
     "e2e_routing_ozone_otc_satellite_only": "the OTC",
     "region_refusal_unresolvable_member": "NY + Wakanda",
     "region_refusal_buffer_too_large": "within 3000 miles of NYC",
+    "event_baseline_confirmed": "New Jersey",
+    "event_baseline_days_edited": "New Jersey",
+    "event_baseline_too_few_days": "New Jersey",
 }
 
 # Refusals end the run needing input, so no data service is touched.
@@ -52,6 +56,9 @@ EXPECTED: dict[str, tuple[str, bool | None, str]] = {
     "e2e_routing_ozone_otc_satellite_only": ("map", True, ""),
     "region_refusal_unresolvable_member": ("map", True, ""),
     "region_refusal_buffer_too_large": ("map", True, ""),
+    "event_baseline_confirmed": ("event-vs-baseline", True, ""),
+    "event_baseline_days_edited": ("event-vs-baseline", True, ""),
+    "event_baseline_too_few_days": ("event-vs-baseline", True, ""),
 }
 
 
@@ -107,7 +114,7 @@ class CaseFieldTests(unittest.TestCase):
             def __init__(self) -> None:
                 self.files: dict[str, object] = {}
 
-            def add_zarr(self, handle, make) -> None:
+            def add_zarr(self, handle, make, **kwargs) -> None:
                 self.files[handle] = make
 
         volume = Volume()
@@ -125,6 +132,38 @@ class CaseFieldTests(unittest.TestCase):
             [variable] = described["variables"]
             self.assertEqual([variable["name"]], list(dataset.data_vars), case_id)
             self.assertEqual(variable["units"], dataset[variable["name"]].attrs["units"], case_id)
+
+    def test_the_event_fakes_answer_one_day_at_a_time_in_the_services_shapes(self):
+        from benchmark.cases import EVENT_BASELINE_DAYS, EVENT_DAY
+
+        class Volume(_NullVolume):
+            def __init__(self) -> None:
+                self.files: dict[str, object] = {}
+
+            def add_zarr(self, handle, make, **kwargs) -> None:
+                self.files[handle] = make
+
+        volume = Volume()
+        handlers = {case.id: case for case in build_cases(volume)}["event_baseline_confirmed"].handlers
+
+        def call(tool: str, day: str) -> dict:
+            args = {"dataset_handle": "d", "aoi_handle": "a", "time_range": f"{day}T00:00:00Z/{day}T23:59:59Z",
+                    "workspace_id": "w"}
+            if tool == "retrieve_subset":
+                args.update(variables=[], output_format=None)
+            return asyncio.run(handlers[tool](**args))
+
+        covered = call("check_coverage", EVENT_BASELINE_DAYS[0])
+        self.assertEqual((covered["granule_count"] > 0, covered["covered"]), (True, True))
+        self.assertEqual(set(covered) - {"dataset_handle", "aoi_handle", "time_range"},
+                         {"all_time", "granule_count", "covered", "sampled_granules", "sample_granules"})
+        empty = call("check_coverage", "2024-07-05")
+        self.assertEqual((empty["granule_count"], empty["covered"]), (0, False))
+        for day in (EVENT_DAY, *EVENT_BASELINE_DAYS):
+            submitted = call("retrieve_subset", day)
+            self.assertEqual(submitted["job_handle"], f"job_{submitted['obs_handle']}")
+            dataset = volume.files[submitted["obs_handle"]]()
+            self.assertEqual(str(dataset["time"].values[0])[:10], day)
 
     def test_the_case_fields_default_to_no_workflow(self):
         fields = {field.name: field.default for field in dataclasses.fields(BenchmarkCase)}
@@ -197,7 +236,7 @@ class WorkflowAdapterRunTests(unittest.TestCase):
         expected = [case.id for case in build_cases(_NullVolume()) if case.workflow is None]
 
         self.assertEqual(self.suite.uncovered, expected)
-        self.assertEqual(len(self.suite.uncovered) + len(self.suite.results), 20)
+        self.assertEqual(len(self.suite.uncovered) + len(self.suite.results), TOTAL_CASES)
         self.assertFalse(set(self.suite.uncovered) & set(self.results))
 
     def test_the_adapter_refuses_a_case_without_a_workflow(self):
@@ -266,6 +305,66 @@ class WorkflowAdapterRunTests(unittest.TestCase):
         self.assertTrue(Completed().evaluate(outcome).passed)
         self.assertIn("No data", outcome.answer_text)
 
+    def retrieved_days(self, outcome) -> list[str]:
+        return sorted(call.args["time_range"][:10] for call in outcome.boundary_calls if call.tool == "retrieve_subset")
+
+    def test_the_confirmed_event_case_answers_the_days_as_offered_in_a_second_turn(self):
+        from benchmark.cases import EVENT_BASELINE_DAYS, EVENT_DAY
+
+        outcome = self.results["event_baseline_confirmed"].outcome
+
+        [question] = outcome.questions
+        self.assertEqual((question["step"], question["kind"]), ("days", "confirm_list"))
+        self.assertEqual(question["items"], list(EVENT_BASELINE_DAYS))
+        [sent] = outcome.answers
+        self.assertEqual(
+            {k: sent[k] for k in ("run_id", "step", "value")},
+            {"run_id": question["run_id"], "step": "days", "value": list(EVENT_BASELINE_DAYS)},
+        )
+        # The event was retrieved before the answer was sent; every comparison day after it.
+        calls = outcome.boundary_calls
+        self.assertEqual(
+            [c.args["time_range"][:10] for c in calls[:sent["calls_before"]] if c.tool == "retrieve_subset"], [EVENT_DAY],
+        )
+        self.assertEqual(
+            sorted(c.args["time_range"][:10] for c in calls[sent["calls_before"]:] if c.tool == "retrieve_subset"),
+            sorted(EVENT_BASELINE_DAYS),
+        )
+        self.assertEqual(outcome.run_statuses, {question["run_id"]: "done"})
+        self.assertEqual(self.retrieved_days(outcome), sorted([EVENT_DAY, *EVENT_BASELINE_DAYS]))
+        self.assertEqual(outcome.mode, "Draft workflow: event-vs-baseline v1")
+        findings = {f["name"]: f["value"] for f in outcome.findings}
+        # The event's file reads 1.0 above every comparison day's, cell for cell.
+        self.assertAlmostEqual(findings["mean_difference"], 1.0)
+        self.assertEqual(findings["baseline_days"], 10)
+        self.assertEqual(len(outcome.charts), 1)
+        self.assertIn("operations.select_comparison_days", outcome.tool_calls)
+        # Two retrievals, the event and the baseline, each saved as waiting and then done.
+        self.assertEqual(outcome.tool_calls.count("sources.satellite.get_data"), 4)
+
+    def test_the_edited_event_case_leaves_the_removed_days_out_of_the_retrieval(self):
+        from benchmark.cases import EVENT_BASELINE_DAYS, EVENT_DAY, EVENT_DAYS_REMOVED
+
+        outcome = self.results["event_baseline_days_edited"].outcome
+        kept = [day for day in EVENT_BASELINE_DAYS if day not in EVENT_DAYS_REMOVED]
+
+        [answer] = outcome.answers
+        self.assertEqual(answer["value"], kept)
+        self.assertEqual(self.retrieved_days(outcome), sorted([EVENT_DAY, *kept]))
+        self.assertEqual({f["name"]: f["value"] for f in outcome.findings}["baseline_days"], 8)
+
+    def test_too_few_days_with_granules_stop_the_event_case_before_any_question(self):
+        from benchmark.cases import SPARSE_EVENT_DAY
+
+        outcome = self.results["event_baseline_too_few_days"].outcome
+
+        self.assertEqual(outcome.questions, [])
+        self.assertEqual(list(outcome.run_statuses.values()), ["insufficient_evidence"])
+        self.assertEqual(self.retrieved_days(outcome), [SPARSE_EVENT_DAY])
+        self.assertEqual(len([call for call in outcome.boundary_calls if call.tool == "check_coverage"]), 11)
+        self.assertIn("Only 3 of the 10 candidate days have TEMPO_NO2 data", outcome.answer_text)
+        self.assertEqual(outcome.charts, [])
+
     def test_nothing_in_an_outcome_or_its_saved_record_holds_a_credential(self):
         from benchmark.adapters.workflow import CREDENTIAL_STRINGS
         from benchmark.report import case_record
@@ -274,6 +373,27 @@ class WorkflowAdapterRunTests(unittest.TestCase):
             text = repr(result.outcome) + json.dumps(case_record(result), default=str)
             for secret in CREDENTIAL_STRINGS:
                 self.assertNotIn(secret, text, case_id)
+
+
+@unittest.skipIf(_MISSING_DEPENDENCIES, "benchmark test dependencies are not installed")
+class UnscriptedQuestionTests(unittest.TestCase):
+    def test_a_question_no_answer_is_scripted_for_leaves_the_case_unfinished(self):
+        from benchmark.adapters.workflow import WorkflowAdapter
+        from benchmark.fake_earthdata import HandleVolume
+
+        async def run():
+            with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+                volume = HandleVolume(tmp)
+                case = {c.id: c for c in build_cases(volume)}["event_baseline_confirmed"]
+                return await WorkflowAdapter().run(dataclasses.replace(case, answers=()), volume)
+
+        outcome = asyncio.run(run())
+
+        self.assertFalse(outcome.done)
+        self.assertIsNone(outcome.error)
+        self.assertTrue(outcome.unfinished.startswith("the workflow stopped to ask: These days will be used"))
+        self.assertEqual((outcome.questions, outcome.answers), ([], []))
+        self.assertEqual(list(outcome.run_statuses.values()), ["needs_input"])
 
 
 class NeedsInputKindTests(unittest.TestCase):

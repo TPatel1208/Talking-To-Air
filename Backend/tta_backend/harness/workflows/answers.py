@@ -9,7 +9,8 @@ question reaches the user, the result and the ledger as one payload::
      "items": ["2024-06-01", ...]}
 
 ``options`` replaces ``items`` for ``pick_one`` and ``pick_many``; a ``text``
-question has neither. ``prompt`` repeats ``question`` for the readers that
+question has neither. A ``confirm_list`` question may carry ``max_items``, the
+most items its answer may hold. ``prompt`` repeats ``question`` for the readers that
 show a result's question by its prompt.
 
 ``check_answer`` checks an answer against the question in code and returns it
@@ -107,6 +108,7 @@ def question_payload(
     *,
     options: Sequence[JsonValue] = (),
     items: Sequence[JsonValue] = (),
+    max_items: int | None = None,
 ) -> dict[str, Any]:
     """The question a run waits on, as the result, the ledger and the app carry it."""
     payload: dict[str, Any] = {"run_id": run_id, "step": step, "kind": kind, "question": prompt, "prompt": prompt}
@@ -114,6 +116,8 @@ def question_payload(
         payload["options"] = list(options)
     elif kind == "confirm_list":
         payload["items"] = list(items)
+        if max_items is not None:
+            payload["max_items"] = max_items
     return payload
 
 
@@ -229,13 +233,21 @@ def _same(a: Any, b: Any) -> bool:
     return type(a) is type(b) and a == b
 
 
+def _item_limit(question: Mapping[str, Any]) -> int:
+    """The most items a confirm_list answer may hold: the question's ``max_items`` when it gives a usable one."""
+    limit = question.get("max_items")
+    if isinstance(limit, int) and not isinstance(limit, bool) and 1 <= limit <= MAX_ITEMS:
+        return limit
+    return MAX_ITEMS
+
+
 def check_answer(question: Mapping[str, Any], value: Any) -> JsonValue:
     """``value`` as an answer to ``question``, in canonical form; raises AnswerRejected.
 
     pick_one: exactly one of the options, matched as given or by its text,
     ignoring case and spacing. pick_many: one or more of the options, each
     once; one option given alone counts as a list of one. confirm_list: 1 to
-    ``MAX_ITEMS`` items of the type the offered items have, dates as ISO
+    the question's ``max_items`` (at most ``MAX_ITEMS``) items of the type the offered items have, dates as ISO
     dates; the user may drop items and add new ones, and a repeat is kept
     once. text: 1 to ``MAX_TEXT_CHARS`` characters once trimmed.
     """
@@ -259,8 +271,9 @@ def check_answer(question: Mapping[str, Any], value: Any) -> JsonValue:
     if kind == "confirm_list":
         offered = list(question.get("items") or ())
         what = item_type(offered)
-        wording = CONFIRM_LIST.format(limit=MAX_ITEMS, what=_ITEM_WORDING[what])
-        if not isinstance(value, list | tuple) or not value or len(value) > MAX_ITEMS:
+        limit = _item_limit(question)
+        wording = CONFIRM_LIST.format(limit=limit, what=_ITEM_WORDING[what])
+        if not isinstance(value, list | tuple) or not value or len(value) > limit:
             raise AnswerRejected(wording)
         try:
             items = [_item(what, item, offered) for item in value]

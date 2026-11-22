@@ -44,6 +44,10 @@ class CaseFieldTests(unittest.TestCase):
         from tta_backend.harness.specialists import BUNDLES
 
         for case in _cases_by_id().values():
+            # An exploration cannot be answered into, so a case that spans turns names no bundle.
+            if case.answers:
+                self.assertIsNone(case.bundle, case.id)
+                continue
             self.assertIn(case.bundle, BUNDLES, case.id)
             self.assertIsInstance(case.explore_places, tuple, case.id)
 

@@ -277,6 +277,8 @@ class HandleVolume:
         # carries no content_digest. That is the default on purpose — it keeps
         # most tests on the verify-first ordering.
         self._delivered: dict[str, dict] = {}
+        # Handles registered with ``lazy``, written on their first export.
+        self._unwritten: set[str] = set()
 
     def _path(self, handle: str) -> pathlib.Path:
         media_type, _ = self._factories[handle]
@@ -342,9 +344,14 @@ class HandleVolume:
 
             pq.write_table(factory(), path)
 
-    def add_zarr(self, handle: str, make_dataset: Callable[[], Any]) -> None:
+    def add_zarr(self, handle: str, make_dataset: Callable[[], Any], *, lazy: bool = False) -> None:
+        """Register a Zarr directory handle. ``lazy`` writes it on its first
+        export instead of now, for files only a few cases open."""
         self._factories[handle] = ("zarr", make_dataset)
-        self._write(handle)
+        if lazy:
+            self._unwritten.add(handle)
+        else:
+            self._write(handle)
 
     def add_zarr_zip(self, handle: str, make_dataset: Callable[[], Any]) -> None:
         """Register an ``application/zarr`` handle materialized as a *zipped*
@@ -419,6 +426,9 @@ class HandleVolume:
         self.export_calls[handle] = self.export_calls.get(handle, 0) + 1
         if handle not in self._factories:
             return {"handle": handle, "status": "not_found", "message": f"Unknown handle '{handle}'."}
+        if handle in self._unwritten:
+            self._unwritten.discard(handle)
+            self._write(handle)
         path = self._path(handle)
         if not path.exists():
             return {"handle": handle, "status": "expired", "message": f"Handle '{handle}' has been evicted."}

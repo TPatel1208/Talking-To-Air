@@ -5,6 +5,10 @@ benchmark's fake data boundary: the earthdata MCP fake behind the app's own
 session, EPA AQS behind a capturing fetch, memory stores and an in-memory
 checkpointer. The ``Result`` envelope is turned into an ``Outcome`` the
 existing checks score. Nothing here turns a prompt into inputs; the case does.
+
+A case with scripted answers spans turns: when the run stops on a question
+one of them answers, the run is resumed with it as the app's question control
+would send it, and the last result is scored.
 """
 from __future__ import annotations
 
@@ -21,7 +25,7 @@ from benchmark.adapters.harness_boundary import (  # noqa: F401  (re-exported)
     USER_ID,
     harness_boundary,
 )
-from benchmark.cases import BenchmarkCase
+from benchmark.cases import AnswerScript, BenchmarkCase
 from benchmark.outcome import Outcome, handles_from_calls
 
 
@@ -52,6 +56,15 @@ def _question_lines(question: Any) -> list[str]:
     if options:
         lines.append("Options: " + ", ".join(str(option) for option in options))
     return lines
+
+
+def asked(question: dict[str, Any], run_id: str, step: str) -> dict[str, Any]:
+    """The question as the outcome records it: the run, step and kind, with what it offered."""
+    kept = {"run_id": run_id, "step": step, "kind": question.get("kind")}
+    for name in ("items", "options"):
+        if name in question:
+            kept[name] = list(question[name])
+    return kept
 
 
 def compose_answer(result: Any) -> str:
@@ -121,6 +134,10 @@ class WorkflowAdapter:
         registry, catalogue = self._load()
         result = None
         error: str | None = None
+        questions: list[dict[str, Any]] = []
+        answers: list[dict[str, Any]] = []
+        statuses: dict[str, str] = {}
+        script = AnswerScript(case.answers)
         started = time.monotonic()
         async with harness_boundary(case) as boundary:
             runner = WorkflowRunner(registry, catalogue, InMemorySaver())
@@ -131,15 +148,28 @@ class WorkflowAdapter:
                     boundary.context, boundary.build_env, case.workflow, version,
                     case.inputs_for(boundary.run_day),
                 )
+                statuses[result.trace_id] = result.status
+                while result.status == "needs_input":
+                    taken = script.take(result.question)
+                    if taken is None:
+                        break
+                    run_id, step, value = taken
+                    questions.append(asked(dict(result.question or {}), run_id, step))
+                    answers.append({
+                        "run_id": run_id, "step": step, "value": value, "calls_before": len(boundary.boundary_calls),
+                    })
+                    env = await boundary.build_env(boundary.context, run_id)
+                    result = await runner.resume(env, value, step=step)
+                    statuses[result.trace_id] = result.status
             except (UnknownWorkflow, NotRunnable) as exc:
                 error = f"{type(exc).__name__}: {exc}"
             except Exception as exc:
                 # The type name only: an exception's text can carry values or secrets.
                 error = f"the workflow run raised {type(exc).__name__}"
             elapsed_seconds = time.monotonic() - started
-            trace = (
-                await boundary.stores.traces.entries(USER_ID, result.trace_id) if result is not None else []
-            )
+            trace: list[Any] = []
+            for run_id in statuses:
+                trace.extend(await boundary.stores.traces.entries(USER_ID, run_id))
 
         outcome = Outcome(
             boundary_calls=list(boundary.boundary_calls),
@@ -152,6 +182,9 @@ class WorkflowAdapter:
             clock_end=boundary.clock.today(),
             elapsed_seconds=elapsed_seconds,
             tool_calls=[entry.capability for entry in trace if entry.capability and entry.status != "skipped"],
+            questions=questions,
+            answers=answers,
+            run_statuses=statuses,
         )
         if result is None:
             outcome.error = error

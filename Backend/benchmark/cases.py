@@ -8,6 +8,7 @@ own tools.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any, Awaitable, Callable
@@ -15,6 +16,7 @@ from typing import Any, Awaitable, Callable
 from benchmark.checks import (
     AnswerMatches,
     AnswerMentionsAny,
+    AnsweredThenDone,
     AreaRequested,
     AqsDateRelativeToClock,
     BoundaryCalled,
@@ -22,9 +24,12 @@ from benchmark.checks import (
     ChartProduced,
     Check,
     Completed,
+    FindingReported,
     GroundSourceNotUsed,
     GroundSourceUsed,
     HasResult,
+    RetrievedAroundAnswer,
+    RetrievedExactlyDays,
     SatelliteSourceUsed,
     StageSequenceAny,
     TimeRangeCovers,
@@ -43,6 +48,54 @@ class PatchSpec:
     target: str
     return_value: Any
     is_async: bool = True
+
+
+class _Offered:
+    def __repr__(self) -> str:
+        return "AS_OFFERED"
+
+
+# A scripted answer's value that sends back the items the question offered.
+AS_OFFERED: Any = _Offered()
+
+
+@dataclass(frozen=True)
+class ScriptedAnswer:
+    """What the user answers through the app's question control when a run asks on ``step``.
+
+    ``value`` is sent as given. Left as ``AS_OFFERED``, the question's items
+    are sent back as offered, less any listed in ``without``: confirming a
+    list, or editing it by removing items.
+    """
+
+    step: str
+    value: Any = AS_OFFERED
+    without: tuple[Any, ...] = ()
+
+    def value_for(self, question: Mapping[str, Any]) -> Any:
+        if self.value is not AS_OFFERED:
+            return self.value
+        return [item for item in question.get("items") or () if item not in self.without]
+
+
+class AnswerScript:
+    """A case's scripted answers, each given once, in order, to the question on its step."""
+
+    def __init__(self, answers: tuple[ScriptedAnswer, ...]) -> None:
+        self._left = list(answers)
+
+    def take(self, question: Mapping[str, Any] | None) -> tuple[str, str, Any] | None:
+        """The run id, step and value that answer ``question``, or None when no scripted answer is for it."""
+        if not question:
+            return None
+        run_id, step = question.get("run_id"), question.get("step")
+        if not isinstance(run_id, str) or not isinstance(step, str):
+            return None
+        for i, scripted in enumerate(self._left):
+            if scripted.step == step:
+                del self._left[i]
+                return run_id, step, scripted.value_for(question)
+        return None
 
 
 @dataclass
@@ -69,6 +122,8 @@ class BenchmarkCase:
     explore_places: tuple[str, ...] = ()
     # True where stopping to ask the user a question is the right outcome, so a run that does counts as finished.
     expects_question: bool = False
+    # Answers the user gives through the app's question control, so the case spans turns; the last turn is scored.
+    answers: tuple[ScriptedAnswer, ...] = ()
 
     def inputs_for(self, today: date) -> dict[str, Any]:
         """The workflow inputs, with a callable given the run's date."""
@@ -109,6 +164,20 @@ MODIS_AOD_VARIABLE = "COMBINE_AOD_550_AVG"
 MODIS_AOD_UNITS = "AOD (550nm)"
 # South, north, west, east.
 HOUSTON_BBOX = (29.4, 30.2, -96.0, -94.9)
+NEW_JERSEY_BBOX = (38.9, 41.4, -75.6, -73.9)
+
+# An event day and the comparison days the event-vs-baseline method proposes for it: the ten weekdays
+# nearest Thursday 2024-07-04 within four weeks, leaving out 07-03 and 07-05.
+EVENT_DAY = "2024-07-04"
+EVENT_BASELINE_DAYS = (
+    "2024-06-26", "2024-06-27", "2024-06-28", "2024-07-01", "2024-07-02",
+    "2024-07-08", "2024-07-09", "2024-07-10", "2024-07-11", "2024-07-12",
+)
+# The days the editing case removes.
+EVENT_DAYS_REMOVED = ("2024-07-02", "2024-07-08")
+# Thursday 2024-08-15, for which only three of the proposed days have granules.
+SPARSE_EVENT_DAY = "2024-08-15"
+SPARSE_DAYS_WITH_DATA = ("2024-08-13", "2024-08-19", "2024-08-20")
 
 # What the geocoder returns for a region refusal case, so a buffer around
 # "NYC" centres on a real point without a live Nominatim call.
@@ -340,6 +409,33 @@ _january_aqs_get = _daily_means_aqs_get(
 _requested_day_aqs_get = _newark_aqs_get(lambda params: [_daily_row(str(params.get("bdate", "")), 5.0)])
 
 
+def _iso_days(days) -> tuple[date, ...]:
+    return tuple(date.fromisoformat(day) for day in days)
+
+
+def _event_handlers(volume_handle: Callable[[str], str], days_with_data: set[str]) -> dict[str, Handler]:
+    """Coverage and retrieval one day at a time, as the real service answers a single-day range.
+
+    ``days_with_data`` have granules; any other day has none. A retrieval of a
+    day is served the file ``volume_handle(day)`` names.
+    """
+
+    async def check_coverage(dataset_handle, aoi_handle, time_range, workspace_id):
+        day = str(time_range)[:10]
+        count = 9 if day in days_with_data else 0
+        # The service's own shape: the true count, whether any exist, and a sample of them.
+        return {
+            "dataset_handle": dataset_handle, "aoi_handle": aoi_handle, "time_range": time_range, "all_time": False,
+            "granule_count": count, "covered": count > 0, "sampled_granules": 0, "sample_granules": [],
+        }
+
+    async def retrieve_subset(dataset_handle, aoi_handle, time_range, variables, output_format, workspace_id):
+        obs_handle = volume_handle(str(time_range)[:10])
+        return {"job_handle": f"job_{obs_handle}", "obs_handle": obs_handle, "status": "pending", "provider": "harmony"}
+
+    return {"check_coverage": check_coverage, "retrieve_subset": retrieve_subset}
+
+
 def _dates(start: str, end: str | None = None) -> dict[str, str]:
     return {"start": start, "end": end or start}
 
@@ -352,8 +448,30 @@ def _covers(tool: str, *days: tuple[int, int, int]) -> tuple[Check, ...]:
     return tuple(TimeRangeCovers(tool, date(*day)) for day in days)
 
 
+# The workflow's own stop for the sparse case: 3 of its 10 candidate days have granules, and 5 are needed.
+TOO_FEW_DAYS_PATTERN = (
+    r"\bonly 3 of the 10 candidate days have tempo_no2 data over [^;\n]{1,80}; "
+    r"at least 5 are needed for a baseline\."
+)
+# The event's file reads 1.0 above every comparison day's in every cell, so the baseline mean is 1.0 below it.
+EVENT_MEAN_DIFFERENCE = 1.0
+
+
+def event_checks(baseline_days: tuple[str, ...]) -> tuple[Check, ...]:
+    """An event case that asks for the days: the event retrieved once before the answer, exactly the
+    answered days after it, and the event minus the baseline on a map."""
+    return (
+        Completed(),
+        AnsweredThenDone("days", "confirm_list"),
+        RetrievedAroundAnswer("days", before=_iso_days([EVENT_DAY]), after=_iso_days(baseline_days)),
+        FindingReported("baseline_days", len(baseline_days)),
+        FindingReported("mean_difference", EVENT_MEAN_DIFFERENCE, tolerance=1e-6),
+        ChartProduced(),
+    )
+
+
 def build_cases(volume) -> list[BenchmarkCase]:
-    """Build the 20 cases. ``volume`` is a fake_earthdata.HandleVolume; the
+    """Build the 23 cases. ``volume`` is a fake_earthdata.HandleVolume; the
     plotting cases get tiny real Zarr/Parquet files in it to open."""
     import pandas as pd
     import pyarrow as pa
@@ -502,6 +620,16 @@ def build_cases(volume) -> list[BenchmarkCase]:
     volume.add_zarr("obs_e2e_satellite_1", newark_map_dataset)
     volume.add_zarr("obs_e2e_tropomi_1", lambda: newark_map_dataset(TROPOMI_NO2_VARIABLE))
     volume.add_zarr("obs_e2e_ozone_1", ozone_dataset)
+
+    # One file per day over New Jersey: the event reads 1.0 higher than every comparison day.
+    def event_handle(day: str) -> str:
+        return f"obs_event_{day.replace('-', '')}"
+
+    for day in (EVENT_DAY, *EVENT_BASELINE_DAYS, SPARSE_EVENT_DAY, *SPARSE_DAYS_WITH_DATA):
+        level = 3.0 if day in (EVENT_DAY, SPARSE_EVENT_DAY) else 2.0
+        volume.add_zarr(event_handle(day), lambda day=day, level=level: daily_dataset(
+            TEMPO_NO2_VARIABLE, NEW_JERSEY_BBOX, 0.1, day, day, level=level,
+        ), lazy=True)
 
     lifecycle = _volume_lifecycle_handlers(volume)
 
@@ -882,5 +1010,55 @@ def build_cases(volume) -> list[BenchmarkCase]:
             workflow="map",
             workflow_inputs={"quantity": "no2_tropospheric_column", "area": "within 3000 miles of NYC", "dates": _dates("2024-06-01", "2024-06-07")},
             expects_question=True,
+        ),
+        # An event against typical days: the run asks the user to confirm the comparison days, and the
+        # answer comes back through the app's question control in a second turn.
+        BenchmarkCase(
+            id="event_baseline_confirmed",
+            category="event_comparison",
+            prompt="Was NO2 over New Jersey on 2024-07-04 different from a typical weekday around then?",
+            handlers={
+                **_standard_handlers(product="TEMPO_NO2", units=NO2_FILE_UNITS),
+                **_event_handlers(event_handle, {EVENT_DAY, *EVENT_BASELINE_DAYS}),
+                **lifecycle,
+            },
+            checks=event_checks(EVENT_BASELINE_DAYS),
+            workflow="event-vs-baseline",
+            workflow_inputs={"quantity": "no2_tropospheric_column", "area": "New Jersey", "event_date": EVENT_DAY},
+            answers=(ScriptedAnswer("days"),),
+        ),
+        BenchmarkCase(
+            id="event_baseline_days_edited",
+            category="event_comparison",
+            prompt="How did NO2 over New Jersey on 2024-07-04 compare with typical days?",
+            handlers={
+                **_standard_handlers(product="TEMPO_NO2", units=NO2_FILE_UNITS),
+                **_event_handlers(event_handle, {EVENT_DAY, *EVENT_BASELINE_DAYS}),
+                **lifecycle,
+            },
+            checks=event_checks(tuple(day for day in EVENT_BASELINE_DAYS if day not in EVENT_DAYS_REMOVED)),
+            workflow="event-vs-baseline",
+            workflow_inputs={"quantity": "no2_tropospheric_column", "area": "New Jersey", "event_date": EVENT_DAY},
+            answers=(ScriptedAnswer("days", without=EVENT_DAYS_REMOVED),),
+        ),
+        # Too few nearby days have granules, so the run stops before asking and retrieves only the event.
+        BenchmarkCase(
+            id="event_baseline_too_few_days",
+            category="event_comparison",
+            bundle="analyse",
+            explore_places=("New Jersey",),
+            prompt="How did NO2 over New Jersey on 2024-08-15 compare with normal days around it?",
+            handlers={
+                **_standard_handlers(product="TEMPO_NO2", units=NO2_FILE_UNITS),
+                **_event_handlers(event_handle, {SPARSE_EVENT_DAY, *SPARSE_DAYS_WITH_DATA}),
+                **lifecycle,
+            },
+            checks=(
+                Completed(),
+                RetrievedExactlyDays(_iso_days([SPARSE_EVENT_DAY])),
+                AnswerMatches(TOO_FEW_DAYS_PATTERN, "says too few comparison days have data"),
+            ),
+            workflow="event-vs-baseline",
+            workflow_inputs={"quantity": "no2_tropospheric_column", "area": "New Jersey", "event_date": SPARSE_EVENT_DAY},
         ),
     ]
