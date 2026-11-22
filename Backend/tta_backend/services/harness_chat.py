@@ -104,7 +104,7 @@ from tta_backend.harness.run_context import (
 from tta_backend.harness.storage import Stores
 from tta_backend.harness.supervisor import Supervisor, Turn
 from tta_backend.harness.supervisor.answer import data_sources, unavailable_wording
-from tta_backend.harness.supervisor.supervisor import AppAnswer
+from tta_backend.harness.supervisor.supervisor import AppAnswer, ResumeRequest
 from tta_backend.harness.workflows.answers import answerable
 from tta_backend.harness.trace import FailureCategory, RunNotFound, TraceStore
 from tta_backend.harness.workflows.loader import WorkflowCatalogue
@@ -666,6 +666,14 @@ def app_answer(answer: Any) -> AppAnswer | None:
     return AppAnswer(run_id=str(data["run_id"]), step=str(data["step"]), value=data.get("value"))
 
 
+def app_resume(resume: Any) -> ResumeRequest | None:
+    """A continue request the chat request carried, as the supervisor takes it."""
+    if resume is None or isinstance(resume, ResumeRequest):
+        return resume
+    data = resume if isinstance(resume, dict) else resume.model_dump()
+    return ResumeRequest(run_id=str(data["run_id"]))
+
+
 # The chat service
 
 
@@ -674,6 +682,8 @@ class TurnSupervisor(Protocol):
         self, context: RunContext, build_env: EnvFactory, earthdata: EarthdataSession, message: str,
         answer: AppAnswer | None = None,
     ) -> Turn: ...
+
+    # A supervisor that continues runs also takes ``resume: ResumeRequest | None`` on ``turn``.
 
 
 @dataclass
@@ -721,22 +731,44 @@ class HarnessChat:
         self._connectors = StoppedConnectors(capabilities, catalogue)
 
     async def stream_chat_events(
-        self, message: str, thread_id: str, user_id: str, request_id: str, answer: Any = None,
+        self, message: str, thread_id: str, user_id: str, request_id: str, answer: Any = None, resume: Any = None,
     ) -> AsyncIterator[str]:
         """One turn's frames. ``answer`` is the request's ``{run_id, step, value}`` from the app's
-        question control; ``message`` then holds the picked option's text, which the transcript keeps."""
+        question control; ``message`` then holds the picked option's text, which the transcript keeps.
+        ``resume`` is its ``{run_id}`` to continue a waiting run, with ``message`` the fixed text sent."""
         # The earthdata tools read the user from this context. No cube write
         # may start while a turn runs: it would compete with the turn for
         # dask, the HDF5 lock and memory.
         # Closed with this stream, so a reader going away reaches the turn's own handling at once.
-        frames = aclosing(self._turn_frames(message, thread_id, user_id, request_id, app_answer(answer)))
+        frames = aclosing(
+            self._turn_frames(message, thread_id, user_id, request_id, app_answer(answer), app_resume(resume)),
+        )
         with user_id_context(user_id), cube_cache.active_turn():
             async with frames as turn_frames:
                 async for frame in turn_frames:
                     yield frame
 
+    def quiet_context(self, thread_id: str, user_id: str) -> tuple[RunContext, TurnPorts]:
+        """A run context and ports for work outside a turn, such as listing or cancelling paused
+        runs: nothing it reports is streamed. The caller binds the user, as a turn does."""
+
+        def put(item: tuple[str, Any]) -> None:
+            return None
+
+        context = RunContext(
+            identity=Identity(user_id=user_id, conversation_id=thread_id),
+            events=StreamEvents(put),
+            artifacts=StoredArtifacts(self.chart_service, thread_id, user_id, put, self.stores.traces),
+            credentials=self._credentials(user_id),
+            storage=self.stores,
+            clock=self._clock,
+            reachable=self._reachable,
+        )
+        return context, self._ports(user_id, lambda payload: None)
+
     async def _turn_frames(
         self, message: str, thread_id: str, user_id: str, request_id: str, answered: AppAnswer | None = None,
+        resumed: ResumeRequest | None = None,
     ) -> AsyncGenerator[str, None]:
         started = time.monotonic()
         queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
@@ -766,6 +798,8 @@ class HarnessChat:
             outcome: tuple[str, Any] = ("__error__", RuntimeError("the turn ended without an outcome"))
             # Passed only when given, so a supervisor that takes no answers still serves plain messages.
             extra: dict[str, Any] = {} if answered is None else {"answer": answered}
+            if resumed is not None:
+                extra["resume"] = resumed
             try:
                 outcome = ("__turn__", await self.supervisor.turn(
                     context, ports.build_env, ports.earthdata, message, **extra,
@@ -1113,6 +1147,7 @@ __all__ = [
     "StoredArtifacts",
     "StreamEvents",
     "TurnPorts",
+    "app_resume",
     "build_harness_chat",
     "connector_reachable",
     "earthdata_ready",

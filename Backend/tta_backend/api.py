@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.security.utils import get_authorization_scheme_param
-from pydantic import BaseModel, Field, JsonValue, StringConstraints, field_validator
+from pydantic import BaseModel, Field, JsonValue, StringConstraints, field_validator, model_validator
 from redis import asyncio as aioredis
 from redis.exceptions import RedisError
 from starlette.routing import Match
@@ -70,6 +70,7 @@ from tta_backend.harness.handles.model import is_derived_id
 from tta_backend.services.chart_service import ChartLink, ChartService
 from tta_backend.services.export_service import ExportService, hold_admission, materialize_first_chunk
 from tta_backend.services.harness_chat import HarnessChat, build_harness_chat, transcript_history
+from tta_backend.services import paused_runs
 from tta_backend.services.harness_host import McpEarthdataSession
 from tta_backend.services.payload_figures import chart_rows, csv_bytes, figure_png
 from tta_backend.services.result_export import (
@@ -410,6 +411,8 @@ PUBLIC_ENDPOINTS = {
     ("GET", "/config/auth"),
 }
 ThreadId = Annotated[str, Path(pattern=r"^[A-Za-z0-9-]+$")]
+ThreadIdQuery = Annotated[str, Query(min_length=1, pattern=r"^[A-Za-z0-9-]+$")]
+RunId = Annotated[str, Path(pattern=r"^run_[0-9a-f]{32}$")]
 JobHandle = Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]+$")]
 DatasetHandle = Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]+$")]
 ConnectorType = Annotated[str, Path(pattern=r"^[a-z0-9_-]+$")]
@@ -576,11 +579,25 @@ class ChatAnswer(BaseModel):
         return value
 
 
+class ChatResume(BaseModel):
+    """A request to continue a waiting run whose retrieval jobs are finished."""
+
+    run_id: str = Field(pattern=r"^run_[0-9a-f]{32}$")
+
+
 class ChatRequest(BaseModel):
-    # With an answer, the picked option's text, which the transcript records as the user's message.
+    # With an answer, the picked option's text, which the transcript records as the user's message;
+    # with a resume, the fixed text of the request.
     message: str = Field(min_length=1, max_length=10_000)
     thread_id: Optional[str] = Field(default=None, min_length=1, pattern=r"^[A-Za-z0-9-]+$")
     answer: Optional[ChatAnswer] = None
+    resume: Optional[ChatResume] = None
+
+    @model_validator(mode="after")
+    def _one_request(self) -> "ChatRequest":
+        if self.answer is not None and self.resume is not None:
+            raise ValueError("a message carries an answer or a resume, not both")
+        return self
 
 
 class DiscoverySearchRequest(BaseModel):
@@ -1543,6 +1560,37 @@ async def cancel_job_endpoint(job_handle: JobHandle, request: Request) -> dict[s
         return await cancel_job(job_handle, tools)
 
 
+def _runs_host() -> HarnessChat:
+    host = getattr(app.state, "agent", None) or agent
+    if host is None:
+        raise HTTPException(status_code=503, detail="Agent is not ready")
+    return cast(HarnessChat, host)
+
+
+@app.get("/runs")
+@limiter.limit("60/minute")
+async def get_runs(request: Request, thread_id: ThreadIdQuery) -> dict[str, Any]:
+    """The caller's runs in the conversation that wait on an answer or on their retrieval jobs."""
+    host = _runs_host()
+    try:
+        return {"runs": await paused_runs.list_paused_runs(host, thread_id, request.state.current_user.id)}
+    except paused_runs.RunsUnavailable:
+        raise HTTPException(status_code=503, detail="Runs are not available") from None
+
+
+@app.post("/runs/{run_id}/cancel")
+@limiter.limit("20/minute")
+async def cancel_run_endpoint(run_id: RunId, request: Request) -> dict[str, Any]:
+    """Cancel a paused run. Its provider jobs keep running."""
+    host = _runs_host()
+    try:
+        return await paused_runs.cancel_paused_run(host, request.state.current_user.id, run_id)
+    except paused_runs.RunNotPaused:
+        raise HTTPException(status_code=404, detail="Run not found") from None
+    except paused_runs.RunsUnavailable:
+        raise HTTPException(status_code=503, detail="Runs are not available") from None
+
+
 @app.post("/discovery/search")
 @limiter.limit("20/minute")
 async def discovery_search_endpoint(req: DiscoverySearchRequest, request: Request) -> dict[str, Any]:
@@ -1620,7 +1668,7 @@ async def chat(req: ChatRequest, request: Request) -> Response:
     await _save_session_metadata(thread_id, req.message, user.id, request_id)
     frames = _stamp_activity_on_first_frame(
         active_agent.stream_chat_events(
-            req.message, thread_id, user.id, request_id, **({} if req.answer is None else {"answer": req.answer}),
+            req.message, thread_id, user.id, request_id, **_paused_run_request(req),
         ),
         thread_id,
         request_id,
@@ -1648,6 +1696,15 @@ async def chat(req: ChatRequest, request: Request) -> Response:
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+def _paused_run_request(req: ChatRequest) -> dict[str, Any]:
+    """The answer or resume the chat request carries, for the host; nothing for a plain message."""
+    if req.answer is not None:
+        return {"answer": req.answer}
+    if req.resume is not None:
+        return {"resume": req.resume}
+    return {}
 
 
 def _job_canceller(user_id: str) -> turn_registry.CancelJobs:

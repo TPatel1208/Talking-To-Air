@@ -15,6 +15,12 @@ export default function RightPanel({
   onRefreshJobs,
   onRetrieve,
   onViewResult,
+  runs,
+  runsError,
+  busy,
+  onCancelRun,
+  onContinueRun,
+  onAnswerRun,
 }) {
   const hasRunningJobs = jobs.some(job => !TERMINAL_STATUSES.has(job.status))
   const isActive = tab !== null
@@ -86,6 +92,12 @@ export default function RightPanel({
               onCancel={onCancelJob}
               onRefresh={onRefreshJobs}
               onViewResult={onViewResult}
+              runs={runs}
+              runsError={runsError}
+              busy={busy}
+              onCancelRun={onCancelRun}
+              onContinueRun={onContinueRun}
+              onAnswerRun={onAnswerRun}
             />
           )}
         </div>

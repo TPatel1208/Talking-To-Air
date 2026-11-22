@@ -4,12 +4,13 @@ A host builds one ``Supervisor`` at startup and calls ``turn`` per message.
 Each turn:
 
 0. cancels the conversation's runs left paused past their expiry and, when
-   the message came with an answer from the app's question control,
+   the message came with an answer from the app's question control, or a
+   request to continue a run whose retrieval jobs are finished,
    checks it and resumes its run in code, before any model call. The model
    then finds the message followed by a ``resume_run`` call that already
-   finished, with its result, so it writes only the prose. An answer that
-   does not fit is answered without a model call: the fixed reason, then the
-   question again;
+   finished, with its result, so it writes only the prose. An answer or
+   continue that does not fit is answered without a model call: the fixed
+   reason, then the question again when the run still waits on one;
 1. checks the jobs waiting runs are on and builds the session ledger, rendered once;
 2. runs the agent on the message. Its checkpoint thread is
    ``supervisor/{user}/{conversation}``, so no two users share one. The
@@ -63,7 +64,7 @@ from langgraph.types import Command
 from tta_backend.harness.capabilities.registry import CapabilityRegistry
 from tta_backend.harness.context.ledger import Ledger, build_ledger, render_ledger
 from tta_backend.harness.specialists.prompt import date_preamble
-from tta_backend.harness.jobs import check_waiting
+from tta_backend.harness.jobs import JobState, check_waiting
 from tta_backend.harness.knowledge import NoteCatalogue
 from tta_backend.harness.models import (
     DEFAULT_BACKOFF,
@@ -97,6 +98,7 @@ from tta_backend.harness.workflows.runner import (
     EnvFactory,
     RunNotResumable,
     WorkflowRunner,
+    cancel_paused,
     expire_paused,
 )
 
@@ -116,6 +118,12 @@ UNFINISHED_CALL = "This call did not finish."
 TOOL_LIMIT = "The limit of {limit} tool calls for this turn is reached, so this call was not run. Answer from what you have."
 # An answer from the app's question control for a question no longer waiting.
 ANSWER_GONE = "That question is no longer waiting for an answer, so nothing was resumed."
+# A continue from the app for a run that is not waiting on a retrieval, or whose jobs are not finished.
+CONTINUE_GONE = "That run is not waiting on a retrieval, so nothing was resumed."
+CONTINUE_UNCHECKED = (
+    "The status of that run's retrieval could not be checked just now, so it was not continued; try again shortly."
+)
+CONTINUE_NOT_READY = "The retrieval that run waits on is not finished yet, so it was not continued."
 APP_ANSWER_CALL = "resume_run"
 
 # The most follow-ups a turn suggests, after merging its results' in order.
@@ -196,11 +204,20 @@ def asked_question(results: Sequence[Result]) -> tuple[dict[str, Any] | None, di
     return question, choice
 
 
-def answered_call(answer: AppAnswer, result: Result) -> list[AnyMessage]:
-    """The ``resume_run`` call an answer from the app made in code, and its result, as the model sees them."""
+@dataclass(frozen=True, kw_only=True)
+class ResumeRequest:
+    """A request from the app to continue the waiting run ``run_id`` once its retrieval jobs are finished."""
+
+    run_id: str
+
+
+def answered_call(answer: AppAnswer | ResumeRequest, result: Result) -> list[AnyMessage]:
+    """The ``resume_run`` call a request from the app made in code, and its result, as the model sees them."""
     call_id = f"app_answer_{uuid.uuid4().hex[:16]}"
-    call = {"name": APP_ANSWER_CALL, "args": {"run_id": answer.run_id, "answer": answer.value}, "id": call_id,
-            "type": "tool_call"}
+    args = {"run_id": answer.run_id}
+    if isinstance(answer, AppAnswer):
+        args["answer"] = answer.value
+    call = {"name": APP_ANSWER_CALL, "args": args, "id": call_id, "type": "tool_call"}
     return [
         AIMessage(content="", tool_calls=[call]),
         ToolMessage(content=result_view(result), tool_call_id=call_id, name=APP_ANSWER_CALL),
@@ -610,26 +627,28 @@ class Supervisor:
         earthdata: EarthdataSession,
         message: str,
         answer: AppAnswer | None = None,
+        resume: ResumeRequest | None = None,
     ) -> Turn:
         """Answer ``message`` in the context's conversation; ``answer`` is one the app's question
-        control sent with it, which code checks and resumes its run with before any model call."""
-        try:
-            await expire_paused(context, self._runner, build_env)
-        except Exception as exc:
-            # Runs left paused stay listed; the turn goes on.
-            logger.warning("paused runs could not be expired: %s", type(exc).__name__)
+        control sent with it, and ``resume`` the app's request to continue a run whose jobs are
+        finished. Code checks either and resumes its run before any model call."""
+        if answer is not None and resume is not None:
+            raise ValueError("a turn takes an answer or a resume, not both")
+        await self.expire(context, build_env)
+        request = answer or resume
         answered: Result | None = None
         if answer is not None:
             resumed = await self._resume_answered(context, build_env, answer)
             if isinstance(resumed, str):
-                return await self._refused_answer(context, answer, resumed)
+                return await self._refused(context, answer.run_id, resumed)
             answered = resumed
-        try:
-            job_states = await check_waiting(context, earthdata)
-        except Exception as exc:
-            # Unchecked jobs show as unknown in the ledger; the turn goes on.
-            logger.warning("the jobs of waiting runs could not be checked: %s", type(exc).__name__)
-            job_states = {}
+        elif resume is not None:
+            continued = await self._continue(context, build_env, resume, await self.job_states(context, earthdata))
+            if isinstance(continued, str):
+                return await self._refused(context, resume.run_id, continued)
+            answered = continued
+        # After any resume, so a run that paused again on a new job is not shown as ready.
+        job_states = await self.job_states(context, earthdata) or {}
         ledger = await build_ledger(context, job_states=job_states)
         tools = TurnTools(
             context=context, build_env=build_env, ledger=ledger, runner=self._runner, workflows=self._workflows,
@@ -637,9 +656,9 @@ class Supervisor:
             explore_limits=self._explore_limits, backoff=self._backoff, message=message,
         )
         opening: list[AnyMessage] = [HumanMessage(content=message)]
-        if answer is not None and answered is not None:
+        if request is not None and answered is not None:
             tools.answered(answered)
-            opening.extend(answered_call(answer, answered))
+            opening.extend(answered_call(request, answered))
         user_id = context.identity.user_id
 
         async def sources() -> list[str]:
@@ -708,6 +727,50 @@ class Supervisor:
             status, wording = "limit", LIMIT_WORDING.format(limit=self._limits.model_calls)
         return status, wording, final.text if final is not None and status != "failed" else ""
 
+    async def expire(self, context: RunContext, build_env: EnvFactory) -> None:
+        """Cancel the conversation's runs paused past their expiry."""
+        try:
+            await expire_paused(context, self._runner, build_env)
+        except Exception as exc:
+            # Runs left paused stay listed; the caller goes on.
+            logger.warning("paused runs could not be expired: %s", type(exc).__name__)
+
+    async def job_states(self, context: RunContext, earthdata: EarthdataSession) -> dict[str, JobState] | None:
+        """The state of the jobs each of the conversation's waiting runs is on, without waiting on them;
+        None when they could not be checked."""
+        try:
+            return await check_waiting(context, earthdata)
+        except Exception as exc:
+            # Unchecked jobs show as unknown; the caller goes on.
+            logger.warning("the jobs of waiting runs could not be checked: %s", type(exc).__name__)
+            return None
+
+    async def cancel_paused_run(self, context: RunContext, build_env: EnvFactory, run_id: str) -> Result:
+        """Cancel the conversation's paused run ``run_id`` without a model call; provider jobs are not cancelled.
+        Raises RunNotFound for a run that is not this conversation's, and RunNotResumable or RunClosed
+        for one that is not paused."""
+        identity = context.identity
+        run = await context.storage.traces.get_run(identity.user_id, run_id)
+        if run.conversation_id != identity.conversation_id:
+            raise RunNotFound(run_id)
+        return await cancel_paused(context, self._runner, build_env, run)
+
+    async def _continue(
+        self, context: RunContext, build_env: EnvFactory, resume: ResumeRequest, states: dict[str, JobState] | None,
+    ) -> Result | str:
+        """The result of resuming a waiting run whose jobs are finished, or the fixed reason it was not."""
+        if states is None:
+            return CONTINUE_UNCHECKED
+        state = states.get(resume.run_id)
+        if state is None:
+            return CONTINUE_GONE
+        if state != "ready":
+            return CONTINUE_NOT_READY
+        try:
+            return await self._runner.resume(await build_env(context, resume.run_id))
+        except (AnswerNotTaken, RunNotResumable, RunNotFound):
+            return CONTINUE_GONE
+
     async def _resume_answered(self, context: RunContext, build_env: EnvFactory, answer: AppAnswer) -> Result | str:
         """The result of resuming ``answer``'s run with it, or the fixed reason it was not resumed."""
         identity = context.identity
@@ -721,14 +784,14 @@ class Supervisor:
         except (AnswerNotTaken, RunNotResumable, RunNotFound):
             return ANSWER_GONE
 
-    async def _refused_answer(self, context: RunContext, answer: AppAnswer, reason: str) -> Turn:
-        """The turn for an answer from the app that was not taken, written without a model call:
-        the fixed reason, then the question again while its run still waits on it."""
+    async def _refused(self, context: RunContext, run_id: str, reason: str) -> Turn:
+        """The turn for a request from the app that was not taken, written without a model call:
+        the fixed reason, then the question again while the run still waits on one."""
         identity = context.identity
         shown: list[Result] = []
         try:
-            run = await context.storage.traces.get_run(identity.user_id, answer.run_id)
-            saved = await context.storage.results.get(identity.user_id, answer.run_id)
+            run = await context.storage.traces.get_run(identity.user_id, run_id)
+            saved = await context.storage.results.get(identity.user_id, run_id)
             if run.conversation_id == identity.conversation_id and run.status == "needs_input" == saved.status:
                 shown.append(saved)
         except Exception:

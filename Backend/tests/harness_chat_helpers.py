@@ -60,12 +60,16 @@ class PlaybackSupervisor:
         self.users_seen: list[str | None] = []
         self.messages: list[str] = []
         self.answers: list[Any] = []
+        self.resumes: list[Any] = []
 
-    async def turn(self, context: Any, build_env: Any, earthdata: Any, message: str, answer: Any = None) -> Turn:
+    async def turn(
+        self, context: Any, build_env: Any, earthdata: Any, message: str, answer: Any = None, resume: Any = None,
+    ) -> Turn:
         self.contexts.append(context)
         self.users_seen.append(current_user_id())
         self.messages.append(message)
         self.answers.append(answer)
+        self.resumes.append(resume)
         played: list[str] = []
         for step in self.steps:
             if isinstance(step, asyncio.Event):

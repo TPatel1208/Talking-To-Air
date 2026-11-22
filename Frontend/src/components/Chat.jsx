@@ -11,6 +11,7 @@ import { compactDateRange } from '../utils/displayFormat.js'
 import { compareBadgeLabel, isChartComparable, isSelectionFull, slotIndexOf } from '../utils/compareMode'
 import { reachableArtifacts } from '../utils/artifactReachability'
 import VariableChoicePicker from './VariableChoicePicker'
+import QuestionPicker from './QuestionPicker'
 import ModeBadge from './ModeBadge'
 import ResultActions from './ResultActions'
 import { answerBadge, modeBadge } from '../utils/resultMode'
@@ -193,7 +194,7 @@ function ReloadSessionButton({ onReloadSession }) {
 
 /* ── Message bubble ── */
 function MessageBubble({
-  msg, onFollowupClick, focusedOutput, onFocusOutput,
+  msg, onFollowupClick, onAnswer, isLatest, focusedOutput, onFocusOutput,
   compareMode, compareSelection, onToggleCompareSlot, onCompareCapFull,
   onReloadSession, onOpenConnectors,
 }) {
@@ -394,8 +395,15 @@ function MessageBubble({
         {/* The deterministic variable-choice picker — shown when the
             resolver couldn't confidently choose. Clicking a candidate sends
             its reconstructed prompt through the same path as a typed message. */}
-        {!isUser && !msg.isLoading && (
+        {!isUser && !msg.isLoading && !(isLatest && msg.question) && (
           <VariableChoicePicker variableChoice={msg.variableChoice} onSend={onFollowupClick} />
+        )}
+
+        {/* The question a paused run waits on, answered directly into the
+            run. Only the newest message offers it: an older one is stale,
+            and a reloaded conversation answers from the runs panel. */}
+        {!isUser && !msg.isLoading && isLatest && msg.question && (
+          <QuestionPicker question={msg.question} onAnswer={onAnswer} />
         )}
 
         {/* Follow-up suggestions grounded in this turn's answer —
@@ -518,6 +526,12 @@ export default function Chat({
     const el = scrollContainerRef.current
     if (el) el.scrollTop = el.scrollHeight
   }, [messages, loading])
+
+  // An answer to a paused run's question goes into the run with the readable
+  // message the transcript records.
+  const handleAnswer = async (request) => {
+    await onSend(request.message, { answer: request.answer })
+  }
 
   const handleSend = async (text) => {
     const msg = (text || input).trim()
@@ -701,6 +715,8 @@ export default function Chat({
                   key={i}
                   msg={msg}
                   onFollowupClick={handleSend}
+                  onAnswer={handleAnswer}
+                  isLatest={i === messages.length - 1}
                   focusedOutput={focusedOutput}
                   onFocusOutput={onFocusOutput}
                   compareMode={compareMode}

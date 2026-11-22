@@ -321,17 +321,24 @@ class WorkflowRunner:
         command, resumed = _resumption(pending, answered)
         return await self._guarded(env.context, run.id, spec, lambda: self._drive(env, workflow, command, resumed))
 
-    async def cancel(self, env: RunEnv, *, reason: str = CANCELLED_REASON) -> Run:
+    async def cancel(self, env: RunEnv, *, reason: str = CANCELLED_REASON, paused_only: bool = False) -> Run:
         """Finish a run that has not finished as ``cancelled``. Its provider jobs are not cancelled.
+
+        With ``paused_only`` the run is cancelled only if it is paused at the
+        moment of the change: it is claimed with the trace's own paused-to-running
+        step first, so a resume that got there first wins and this raises
+        RunNotResumable.
 
         The saved result becomes a cancelled one with ``reason``, keeping what
         the run had reported. It is saved only once the cancel has finished
         the run, so a run that finished first (RunClosed) keeps its own result.
         """
         run, spec = await self._own_run(env)
-        if run.status not in ("running", "needs_input", "waiting"):
+        if run.status not in (_PAUSED if paused_only else ("running", "needs_input", "waiting")):
             raise RunNotResumable(run.id, run.status)
         cancelled = await _cancelled_result(env.context, spec, run.id, reason)
+        if paused_only:
+            await _claim_paused(env.context, run.id)
         finished = await env.context.storage.traces.finish_run(
             env.context.identity.user_id, run.id, "cancelled", env.context.clock.now()
         )
@@ -503,6 +510,15 @@ def _marked_cancelled(saved: Result, reason: str) -> Result:
     return Result.model_validate({**saved.model_dump(), "status": CANCELLED, "reason": reason, "question": None})
 
 
+async def _claim_paused(context: RunContext, run_id: str) -> None:
+    """Take a paused run for cancelling, so a resume racing this one cannot also drive it;
+    raises RunNotResumable when the run is no longer paused."""
+    try:
+        await context.storage.traces.resume_run(context.identity.user_id, run_id)
+    except RunClosed as closed:
+        raise RunNotResumable(run_id, closed.status) from None
+
+
 async def cancel_paused(
     context: RunContext, runner: WorkflowRunner, build_env: EnvFactory, run: Run, *, reason: str = CANCELLED_REASON,
 ) -> Result:
@@ -519,8 +535,9 @@ async def cancel_paused(
     user_id = context.identity.user_id
     workflow = run.mode.workflow
     if workflow is not None and (workflow.name, workflow.version) in runner._catalogue:
-        await runner.cancel(await build_env(context, run.id), reason=reason)
+        await runner.cancel(await build_env(context, run.id), reason=reason, paused_only=True)
         return await context.storage.results.get(user_id, run.id)
+    await _claim_paused(context, run.id)
     try:
         saved = await context.storage.results.get(user_id, run.id)
         cancelled = _marked_cancelled(saved, reason)

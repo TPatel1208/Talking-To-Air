@@ -4,6 +4,8 @@ import { applyWorkflowEvent, INITIAL_WORKFLOW_STATE } from '../utils/workflowSta
 import { extractSuggestedFollowups } from '../utils/followups'
 import { hydrateHistoryMessage, normalizeResults } from '../utils/resultMode'
 import { extractVariableChoice } from '../utils/variableChoice'
+import { extractQuestion } from '../utils/pausedQuestion.js'
+import { pausedRunFields } from '../utils/pausedRuns.js'
 import { classifyHistoryFetchFailure, historyStateReducer } from '../utils/historyLoad'
 import { apiFetch } from '../utils/apiFetch.js'
 import {
@@ -62,6 +64,8 @@ export function useChat(onJobProgress) {
   // is listed.
   const [sessionsCursor, setSessionsCursor] = useState(null)
   const [loading, setLoading] = useState(false)
+  // Counts the turns that have ended, so the runs panel refreshes after each.
+  const [turnsDone, setTurnsDone] = useState(0)
   const [error, setError] = useState(null)
   const [historyError, setHistoryError] = useState(null)
   // Sidebar badge state per thread: 'running' | 'done' | 'error', absent for
@@ -448,6 +452,9 @@ export function useChat(onJobProgress) {
           // The deterministic variable-choice picker, when the resolver
           // couldn't confidently choose. null the vast majority of turns.
           variableChoice: extractVariableChoice(data),
+          // The question a paused run waits on, which the app can answer
+          // directly. null when the turn left no run waiting on one.
+          question: extractQuestion(data),
           statusMessage: '',
           workflowStage: INITIAL_WORKFLOW_STATE,
           isLoading: false,
@@ -459,6 +466,7 @@ export function useChat(onJobProgress) {
         // listed — which is the point: a turn that never finishes still
         // shows up in the sidebar it is running in.
         if (!ctx.threadId) listThread(newId, ctx.userMessage)
+        setTurnsDone(count => count + 1)
       } else if (event === 'stopped' || event === 'interrupted') {
         // The two endings the user did not ask for and did not get an answer
         // from. Both leave whatever the turn had already produced in place:
@@ -524,6 +532,7 @@ export function useChat(onJobProgress) {
     artifacts: [],
     suggestedFollowups: [],
     variableChoice: null,
+    question: null,
     isLoading: true,
     streamId,
   }), [])
@@ -717,7 +726,9 @@ export function useChat(onJobProgress) {
     return () => window.clearInterval(interval)
   }, [clearTurnStatus, getSessionId, markTurnStatus])
 
-  const sendMessage = useCallback(async (text) => {
+  // `request` is the answer ({answer}) or the continue ({resume}) the app
+  // sends beside the message for a paused run; a plain message has none.
+  const sendMessage = useCallback(async (text, request = null) => {
     const message = text.trim()
     if (!message) return
 
@@ -750,7 +761,7 @@ export function useChat(onJobProgress) {
           'Content-Type': 'application/json',
           'Idempotency-Key': newIdempotencyKey(),
         },
-        body: JSON.stringify({ message: text, thread_id: threadIdRef.current }),
+        body: JSON.stringify({ message: text, thread_id: threadIdRef.current, ...pausedRunFields(request) }),
         signal: controller.signal,
       })
 
@@ -957,6 +968,7 @@ export function useChat(onJobProgress) {
     hasMoreSessions: sessionsCursor !== null,
     loadMoreSessions,
     turnStatus,
+    turnsDone,
     sendMessage,
     newSession,
     switchSession,
