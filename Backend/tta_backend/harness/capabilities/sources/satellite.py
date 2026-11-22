@@ -78,7 +78,7 @@ from tta_backend.harness.capabilities.products import (
     BBox,
     DateRange,
     Resolution,
-    _match_named,
+    match_named,
     resolve_product,
 )
 from tta_backend.harness.capabilities.registry import Group
@@ -291,7 +291,7 @@ def _quantity(choice: _ProductChoice, registry: Mapping[str, CollectionConfig]) 
     if choice.product is not None and choice.product in registry:
         return registry[choice.product].quantity
     if choice.named is not None:
-        keys, _ = _match_named(choice.named, registry)
+        keys, _ = match_named(choice.named, registry)
         quantities = {registry[k].quantity for k in keys}
         if len(quantities) == 1:
             return quantities.pop()
@@ -1123,19 +1123,22 @@ async def _availability(call: Call[AvailabilityParams]) -> CapabilityResult:
     values: dict[str, JsonValue] = {"area_name": area_name, "period_text": dates.text()}
     [considered] = resolution.considered
     ruled = sorted(considered.reasons - {"wrong_quantity"})
+    facts = {"quantity": cfg.quantity or p.product, "area": area_name, "dates": dates.text(), "product": p.product}
     if resolution.no_data is not None or ruled:
         values.update({
             "available": False,
             "situation": resolution.no_data,
             "ruled_out": [r.reason for r in considered.ruled_out if r.reason in ruled],
         })
-        return call.done(product=p.product, values=values)
+        # The same fixed wording a retrieval gives, so an answer built on this lookup carries it.
+        said = (NO_DATA_REASONS[resolution.no_data].format(**facts),) if resolution.no_data is not None else ()
+        return call.done(product=p.product, values=values, disclosures=said)
     dataset = await _dataset(call, p.product, cfg)
     aoi = await _aoi(call, area.bounds)
     if dates.kind == "range":
         count = await _granules(call, dataset, aoi, span_time_range(dates.start, dates.end))
         values.update({"available": count > 0, "granules": count, "situation": None if count else "gap"})
-        return call.done(product=p.product, values=values)
+        return call.done(product=p.product, values=values, disclosures=() if count else (NO_DATA_REASONS["gap"].format(**facts),))
     with_data: list[JsonValue] = []
     without: list[JsonValue] = []
     total = 0
@@ -1147,7 +1150,9 @@ async def _availability(call: Call[AvailabilityParams]) -> CapabilityResult:
         "available": bool(with_data), "granules": total, "situation": None if with_data else "gap",
         "days_with_data": with_data, "days_without_data": without,
     })
-    return call.done(product=p.product, values=values)
+    return call.done(
+        product=p.product, values=values, disclosures=() if with_data else (NO_DATA_REASONS["gap"].format(**facts),),
+    )
 
 
 check_availability = Capability(

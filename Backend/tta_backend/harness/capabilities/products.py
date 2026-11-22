@@ -258,7 +258,7 @@ def resolve_product(
     named_keys: tuple[str, ...] | None = None
     named_unique = False
     if named is not None:
-        named_keys, named_unique = _match_named(named, registry)
+        named_keys, named_unique = match_named(named, registry)
 
     if pinned is not None:
         if named_keys == ():
@@ -370,7 +370,7 @@ def _norm(text: str) -> str:
     return re.sub(r"[^a-z0-9]", "", text.lower())
 
 
-def _match_named(
+def match_named(
     named: str, registry: Mapping[str, CollectionConfig]
 ) -> tuple[tuple[str, ...], bool]:
     """Registry keys a user's name refers to, and whether it is one product.

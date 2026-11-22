@@ -62,6 +62,9 @@ GROUP = Group(
     description="EPA AQS ground monitors: find monitors, readings, daily/quarterly/annual summaries, exceedance days.",
     notes=(
         "Needs the user's EPA AQS connector (epa_aqs). Pollutants are o3, pm25, pm10, no2, so2 and co.\n"
+        "Monitors measure only those six. For anything else, such as soil moisture, aerosol optical depth "
+        "or a column amount, do not call these tools, not even for a stand-in pollutant; say that no "
+        "ground monitor measures it.\n"
         "Start with find, near an area handle or a lat/lon point; it returns monitor locations as points, "
         "nearest first, and their ids in values.monitor_ids. Near an area it may list monitors just outside "
         "it, marked inside_area false.\n"

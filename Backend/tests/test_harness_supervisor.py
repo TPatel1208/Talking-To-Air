@@ -67,7 +67,7 @@ from tta_backend.harness.testing import (
 )
 from tta_backend.harness.workflows.runner import EXPIRED_REASON, JOB_WAITING
 
-MAP_INPUTS = {"quantity": NO2, "area": "New Jersey", "dates": JUNE}
+MAP_INPUTS = {"quantity": NO2, "area": "New Jersey", "dates": JUNE, "named": "TEMPO"}
 RESOLVE = "sources.areas.resolve"
 # What a lookup resolving NJ discloses, appended to the answer.
 NJ_NOTE = "\n\nNotes:\n- 'NJ' was resolved to New Jersey."
@@ -346,6 +346,28 @@ class InputTests(SupervisorCase):
         self.assertEqual(turn.results, ())
         self.assertEqual(await self.f.stores.traces.list_runs("user-a", "conv-1"), [])
 
+    async def test_a_satellite_workflow_without_the_instrument_or_with_another_than_the_user_named_runs_nothing(self):
+        from tta_backend.harness.supervisor.instruments import NEEDS_INSTRUMENT, USER_NAMED
+
+        message = "Map TROPOMI NO2 over New Jersey for June 1 to 3, 2024."
+        model = Model(script=[run_map(named=None), run_map(named="TEMPO"), answer("Which instrument?")])
+        turn = await self.turn(self.supervisor(model), message)
+
+        self.assertEqual(last_tool(model, 1), {"status": "refused", "reason": NEEDS_INSTRUMENT.format(
+            quantity=NO2, instruments="TEMPO, OMI, TROPOMI")})
+        self.assertEqual(last_tool(model, 2)["reason"], STOP_RETRYING)
+        self.assertEqual(turn.results, ())
+        self.assertEqual(await self.f.stores.traces.list_runs("user-a", "conv-1"), [])
+        self.assertEqual(USER_NAMED.format(mentioned="TROPOMI", named="TEMPO"),
+                         "The user named TROPOMI; pass named as they wrote it, not 'TEMPO'.")
+
+    async def test_the_instrument_the_user_named_is_taken(self):
+        message = "Map TEMPO NO2 over New Jersey for June 1 to 3, 2024."
+        model = Model(script=[run_map(named="tempo"), answer("Here is the map.")])
+        turn = await self.turn(self.supervisor(model), message)
+
+        self.assertEqual(len(turn.results), 1)
+
     def test_only_a_side_of_a_plus_the_user_wrote_is_a_part(self):
         from tta_backend.harness.supervisor.tools import part_of_combined_place
 
@@ -358,7 +380,7 @@ class InputTests(SupervisorCase):
         self.assertFalse(part_of_combined_place("Newark", "What was NO2 in Newark yesterday?"))
 
     async def test_missing_inputs_come_back_to_the_model(self):
-        model = Model(script=[tool_call("run_workflow", {"name": "map", "inputs": {"quantity": NO2}}), answer("Which dates?")])
+        model = Model(script=[tool_call("run_workflow", {"name": "map", "inputs": {"quantity": NO2, "named": "TEMPO"}}), answer("Which dates?")])
         turn = await self.turn(self.supervisor(model))
         self.assertEqual(last_tool(model)["status"], "refused")
         self.assertIn("The workflow needs more before it can run", last_tool(model)["reason"])

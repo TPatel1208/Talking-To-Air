@@ -340,6 +340,16 @@ class GroundWorkflowRuns(PackRun):
         self.assertEqual(entries, self.expected("series"))
         self.assert_charts_stored(result)
 
+    async def test_version_3_gives_the_reading_level_in_every_view(self):
+        for view in ("series", "map", "table", "exceedances"):
+            with self.subTest(view=view):
+                result = await self.f.start({**self.inputs, "view": view}, name="monitor-readings", version=3)
+                self.assertEqual(result.status, "done", result.reason)
+                names = self.names(result)
+                self.assertIn("reading_mean", names)
+                self.assertIn("reading_max", names)
+                self.assert_charts_stored(result)
+
 
 class SmokeWorkflowRuns(PackRun):
     async def test_over_an_area(self):

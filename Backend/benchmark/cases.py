@@ -750,7 +750,7 @@ def build_cases(volume) -> list[BenchmarkCase]:
                 *_covers("retrieve_subset", (2024, 1, 1), (2024, 1, 31)),
             ),
             workflow="timeseries",
-            workflow_inputs={"quantity": "no2_tropospheric_column", "area": "Newark NJ", "dates": _dates("2024-01-01", "2024-01-31"), "mode": "region"},
+            workflow_inputs={"quantity": "no2_tropospheric_column", "area": "Newark NJ", "dates": _dates("2024-01-01", "2024-01-31"), "mode": "region", "named": "TEMPO"},
         ),
         BenchmarkCase(
             id="plotting_point_timeseries",
@@ -970,7 +970,7 @@ def build_cases(volume) -> list[BenchmarkCase]:
             handlers={**_standard_handlers(obs_handle="obs_e2e_ozone_1", product="TEMPO_O3TOT", units="DU"), **lifecycle},
             checks=(Completed(), SatelliteSourceUsed(), GroundSourceNotUsed()),
             workflow="map",
-            workflow_inputs={"quantity": "o3_total_column", "area": "the OTC", "dates": _dates("2024-07-15")},
+            workflow_inputs={"quantity": "o3_total_column", "area": "the OTC", "dates": _dates("2024-07-15"), "named": "TEMPO"},
         ),
         BenchmarkCase(
             id="e2e_routing_non_aq_no_ground",
@@ -995,7 +995,7 @@ def build_cases(volume) -> list[BenchmarkCase]:
             checks=(*region_checks, AnswerMentionsAny(("wakanda",))),
             patches=geocoder,
             workflow="map",
-            workflow_inputs={"quantity": "no2_tropospheric_column", "area": "NY + Wakanda", "dates": _dates("2024-06-01", "2024-06-07")},
+            workflow_inputs={"quantity": "no2_tropospheric_column", "area": "NY + Wakanda", "dates": _dates("2024-06-01", "2024-06-07"), "named": "TEMPO"},
             expects_question=True,
         ),
         BenchmarkCase(
@@ -1008,7 +1008,7 @@ def build_cases(volume) -> list[BenchmarkCase]:
             checks=region_checks,
             patches=geocoder,
             workflow="map",
-            workflow_inputs={"quantity": "no2_tropospheric_column", "area": "within 3000 miles of NYC", "dates": _dates("2024-06-01", "2024-06-07")},
+            workflow_inputs={"quantity": "no2_tropospheric_column", "area": "within 3000 miles of NYC", "dates": _dates("2024-06-01", "2024-06-07"), "named": "TEMPO"},
             expects_question=True,
         ),
         # An event against typical days: the run asks the user to confirm the comparison days, and the
@@ -1024,7 +1024,7 @@ def build_cases(volume) -> list[BenchmarkCase]:
             },
             checks=event_checks(EVENT_BASELINE_DAYS),
             workflow="event-vs-baseline",
-            workflow_inputs={"quantity": "no2_tropospheric_column", "area": "New Jersey", "event_date": EVENT_DAY},
+            workflow_inputs={"quantity": "no2_tropospheric_column", "area": "New Jersey", "event_date": EVENT_DAY, "named": "TEMPO"},
             answers=(ScriptedAnswer("days"),),
         ),
         BenchmarkCase(
@@ -1038,7 +1038,7 @@ def build_cases(volume) -> list[BenchmarkCase]:
             },
             checks=event_checks(tuple(day for day in EVENT_BASELINE_DAYS if day not in EVENT_DAYS_REMOVED)),
             workflow="event-vs-baseline",
-            workflow_inputs={"quantity": "no2_tropospheric_column", "area": "New Jersey", "event_date": EVENT_DAY},
+            workflow_inputs={"quantity": "no2_tropospheric_column", "area": "New Jersey", "event_date": EVENT_DAY, "named": "TEMPO"},
             answers=(ScriptedAnswer("days", without=EVENT_DAYS_REMOVED),),
         ),
         # Too few nearby days have granules, so the run stops before asking and retrieves only the event.
@@ -1059,6 +1059,6 @@ def build_cases(volume) -> list[BenchmarkCase]:
                 AnswerMatches(TOO_FEW_DAYS_PATTERN, "says too few comparison days have data"),
             ),
             workflow="event-vs-baseline",
-            workflow_inputs={"quantity": "no2_tropospheric_column", "area": "New Jersey", "event_date": SPARSE_EVENT_DAY},
+            workflow_inputs={"quantity": "no2_tropospheric_column", "area": "New Jersey", "event_date": SPARSE_EVENT_DAY, "named": "TEMPO"},
         ),
     ]

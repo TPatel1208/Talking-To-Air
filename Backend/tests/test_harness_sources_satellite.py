@@ -829,6 +829,26 @@ class DiscoveryTests(SatelliteCase):
         self.assertEqual((early.read("available"), early.read("situation")), (False, "outside_record"))
         self.assertEqual(self.tools(), [])
 
+    async def test_availability_with_no_data_carries_the_fixed_no_data_wording(self):
+        early = await invoke(self.env, satellite.check_availability, {
+            "product": "TEMPO_NO2", "area": self.area, "dates": "2022-01-01",
+        })
+        self.assertEqual(len(early.disclosures), 1)
+        self.assertTrue(early.disclosures[0].startswith("No data: 2022-01-01 is outside the record"), early.disclosures)
+
+        self.service.days_with_data = set()
+        gap = await invoke(self.env, satellite.check_availability, {
+            "product": "TEMPO_NO2", "area": self.area, "dates": ["2024-06-03", "2024-06-04"],
+        })
+        self.assertEqual(gap.read("situation"), "gap")
+        self.assertTrue(gap.disclosures and gap.disclosures[0].startswith("No data: TEMPO_NO2 has no observations"))
+
+        self.service.days_with_data = {"2024-06-03"}
+        found = await invoke(self.env, satellite.check_availability, {
+            "product": "TEMPO_NO2", "area": self.area, "dates": ["2024-06-03", "2024-06-04"],
+        })
+        self.assertEqual(found.disclosures, ())
+
     def test_groups_register_with_notes(self):
         registry = CapabilityRegistry()
         registry.add_group(satellite.GROUP)

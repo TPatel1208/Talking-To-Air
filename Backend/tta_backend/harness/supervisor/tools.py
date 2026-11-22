@@ -58,6 +58,7 @@ from tta_backend.harness.specialists.task import ExploreLimits, ExploreTask
 from tta_backend.harness.specialists.tools import failure_view, retry_helps, tool_schema
 from tta_backend.harness.specialists.tools import result_view as capability_view
 from tta_backend.harness.supervisor.answer import dumps, result_view, unavailable_wording, view_of
+from tta_backend.harness.supervisor.instruments import instrument_refusal
 from tta_backend.harness.trace import FailureCategory, Run, RunClosed, RunNotFound, StepFailure, new_run_id
 from tta_backend.harness.workflows.compile import NotRunnable
 from tta_backend.harness.workflows.inputs import input_step_id
@@ -454,6 +455,10 @@ class TurnTools:
         split = self._split([inputs.get(key) for key, declared in spec.inputs.items() if declared.type == "area"])
         if split is not None:
             return self._input_refusal(name, split)
+        if "named" in spec.inputs:
+            unnamed = instrument_refusal(inputs.get("named"), inputs.get("quantity"), self._message)
+            if unnamed is not None:
+                return self._input_refusal(name, unnamed)
         try:
             result = await self._runner.start(self.context, self._build_env, name, self._workflows[name], inputs)
         except UnknownWorkflow:

@@ -4,6 +4,7 @@ from __future__ import annotations
 from tta_backend.harness.capabilities.registry import CapabilityRegistry
 from tta_backend.harness.capabilities.sources.satellite import QUANTITIES
 from tta_backend.harness.specialists.bundles import BUNDLES
+from tta_backend.harness.supervisor.instruments import instruments
 from tta_backend.harness.workflows.loader import WorkflowCatalogue
 from tta_backend.harness.workflows.spec import Input, WorkflowSpec
 
@@ -29,7 +30,12 @@ _FORMATS = {
     "date_list": "date_list: a list of ISO dates.",
     "area": "area: the place exactly as the user wrote it, or an area handle from the session ledger.",
     "choice": "choice: one of the options listed with the input.",
-    "text": "text: free text; named is a product or instrument the user named, as they wrote it.",
+    "text": (
+        "text: free text. named is always given: the instrument or product the user named, as they wrote "
+        "it; if they named none, one that serves the quantity: "
+        + "; ".join(f"{quantity}: {', '.join(names)}" for quantity, names in instruments().items())
+        + "."
+    ),
     "number": "number: a plain number.",
     "monitor": "monitor: a monitor id from the session ledger.",
 }
