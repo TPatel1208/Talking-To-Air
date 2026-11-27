@@ -14,7 +14,6 @@ from tests.test_harness_workflow_packs_run import (
     SITE_B,
     TIMESERIES,
     PackRun,
-    fetch,
     step,
 )
 from tests.test_harness_workflow_runner import AREA_ENTRY
