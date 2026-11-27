@@ -25,12 +25,10 @@ the same work, and the event log sits between it and the reader.
 ## Grid processing offload
 
 Opening a retrieved handle (`services/open_handle.py::_open` — `xr.open_zarr`/
-`xr.open_dataset`/`pq.read_table`) and each satellite tool's CPU-bound
-mask -> aggregate -> payload chain (`mask_data_by_geometry`,
-`AggregationService.aggregate`, chart/stat/comparison payload serialization
-in `tools/satellite_tools/plot_tools.py`, `stat_tools.py`,
-`comparison_tools.py`, `validation_tools.py`) run under `asyncio.to_thread`,
-not on the FastAPI event loop. A large grid rendering for one researcher no
+`xr.open_dataset`/`pq.read_table`) and the CPU-bound mask -> aggregate ->
+payload chain behind each harness capability (`mask_data_by_geometry`,
+`AggregationService.aggregate`, chart/stat/comparison payload serialization)
+run off the FastAPI event loop. A large grid rendering for one researcher no
 longer freezes every other concurrent stream or the health endpoint.
 
 ## Load testing

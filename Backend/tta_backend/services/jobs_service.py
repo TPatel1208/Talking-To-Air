@@ -16,7 +16,7 @@ from typing import Any
 from langchain_core.tools import BaseTool
 
 from tta_backend.earthdata_mcp.results import CATEGORY_NOT_FOUND, MCPToolError, parse_tool_result
-from tta_backend.services.retrieval_composites import TERMINAL_STATUSES, annotate_paused
+from tta_backend.domain.earthdata.retrieval import TERMINAL_STATUSES, annotate_paused
 
 # Cap the get_retrieval_status fan-out: a workspace accumulates jobs over its
 # lifetime (hundreds in practice) and the panel refetches the whole list on

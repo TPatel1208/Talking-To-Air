@@ -1,0 +1,66 @@
+name: timeseries
+version: 2
+status: draft
+description: Plot one quantity over time, as the area mean for a region or sampled at a point.
+examples:
+  - How did tropospheric NO2 over New Jersey change through July 2024?
+  - Plot the daily ozone column over Houston for August 2024.
+  - Show NO2 at Newark from 2024-06-01 to 2024-06-30 as a point series.
+
+inputs:
+  quantity: {type: quantity, ask: "What should the time series show?"}
+  area:     {type: area, ask: "Which area?"}
+  dates:    {type: date_range, ask: "Which dates?"}
+  # region: the area mean at each time step; point: the data sampled at the area's location.
+  mode:     {type: choice, options: [region, point], default: region}
+  # A product or instrument the user named; absent means the registry chooses.
+  named:    {type: text, default: null}
+  # The finest cadence the analysis needs; absent means the product's own cadence is accepted.
+  cadence:  {type: choice, options: [hourly, daily, monthly], default: null}
+
+products:
+  quantity: registry_default
+
+limits:
+  min_coverage: 0.1
+
+steps:
+  - id: data
+    use: sources.satellite.get_data
+    when: 'mode == "region"'
+    with: {quantity: $quantity, named: $named, cadence: $cadence, area: $area, dates: $dates, date_role: range, min_valid_fraction: limits.min_coverage}
+  - id: series
+    use: operations.regional_series
+    with: {data: $data}
+  - id: figure
+    use: render.timeseries
+    with: {series: [$series]}
+  - id: average
+    use: operations.statistic
+    with: {data: $series, stat: mean}
+
+  - id: point
+    use: sources.satellite.get_point_series
+    when: 'mode == "point"'
+    with: {quantity: $quantity, named: $named, cadence: $cadence, area: $area, dates: $dates}
+  - id: point_figure
+    use: render.timeseries
+    with: {series: [$point]}
+  - id: point_average
+    use: operations.statistic
+    with: {data: $point, stat: mean}
+
+outputs:
+  findings:
+    - {name: days_with_data, value: $data.quality.days_with_data, unit: days, optional: true}
+    - {name: series_mean, value: $average.summary.value, unit: $series.unit, optional: true}
+    - {name: series_max, value: $series.summary.max, unit: $series.unit, optional: true}
+    - {name: series_min, value: $series.summary.min, unit: $series.unit, optional: true}
+    - {name: point_days_with_data, value: $point.summary.days_with_data, unit: days, optional: true}
+    - {name: point_mean, value: $point_average.summary.value, unit: $point.unit, optional: true}
+  figures:
+    - {from: $figure, optional: true}
+    - {from: $point_figure, optional: true}
+  data:
+    - {from: $series, optional: true}
+    - {from: $point, optional: true}

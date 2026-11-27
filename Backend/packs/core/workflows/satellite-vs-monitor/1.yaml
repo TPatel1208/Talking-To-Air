@@ -1,0 +1,67 @@
+name: satellite-vs-monitor
+version: 1
+status: draft
+description: Compare satellite tropospheric NO2 with EPA ground NO2 monitors over an area and dates, as the correlation between the two daily series; only NO2 is supported.
+examples:
+  - Compare TEMPO NO2 with the EPA ground monitors over Newark for the first week of January 2024.
+  - How well does satellite NO2 track the ground monitors over New Jersey in July 2024?
+  - Does the NO2 column from space agree with EPA monitors around Houston in March 2024?
+
+inputs:
+  quantity: {type: quantity, ask: "Which satellite quantity should be compared with the monitors?"}
+  area:     {type: area, ask: "Which area?"}
+  dates:    {type: date_range, ask: "Which dates?"}
+  # A product or instrument the user named; absent means the registry chooses.
+  named:    {type: text, default: null}
+
+# Only NO2 columns are paired with monitors. Near-real-time streams are left out so the days stay consistent.
+products:
+  quantity:
+    - TEMPO_NO2
+    - TROPOMI_NO2
+    - OMI_NO2
+
+limits:
+  min_coverage: 0.05
+
+steps:
+  - id: find
+    use: sources.monitors.find
+    with: {pollutant: no2, start: $dates.start, end: $dates.end, area: $area, limit: 10}
+    method: Up to 10 EPA AQS NO2 monitors were listed, the ones nearest the centre of the area first.
+  # One gridded retrieval over the whole area serves every monitor; a monitor's values are read from its nearest cell.
+  - id: data
+    use: sources.satellite.get_data
+    with: {quantity: $quantity, named: $named, cadence: daily, area: $area, dates: $dates, date_role: range, min_valid_fraction: limits.min_coverage}
+  - id: readings
+    use: sources.monitors.readings
+    with: {pollutant: no2, start: $dates.start, end: $dates.end, points: $find, frequency: daily}
+  - id: pair
+    use: operations.pair_with_monitors
+    with: {grid: $data, readings: $readings, monitors: $find}
+    method: Each monitor was paired with the satellite cell nearest it, by local day, over {summary.pairs} monitor-days (on {summary.paired_days} days) with both a valid satellite value and a reading.
+  - id: figure_series
+    use: render.timeseries
+    with: {series: [$pair, $readings], title: Satellite values at the monitors' cells and the monitors' daily readings}
+  # The monitors' own daily values, so the map shows where they are and what they read.
+  - id: monitor_values
+    use: sources.monitors.daily_summary
+    required: false
+    with: {pollutant: no2, start: $dates.start, end: $dates.end, points: $find}
+  - id: figure_map
+    use: render.monitor_map
+    required: false
+    with: {data: $monitor_values, pollutant: no2, stat: mean}
+
+outputs:
+  findings:
+    - {name: monitors_found, value: $find.summary.monitors, unit: monitors}
+    - {name: monitors_paired, value: $pair.summary.monitors_paired, unit: monitors}
+    - {name: monitors_without_pairs, value: $pair.summary.monitors_without_pairs, unit: monitors}
+    - {name: paired_days, value: $pair.summary.paired_days, unit: days}
+    - {name: pairs, value: $pair.summary.pairs, unit: monitor-days}
+    - {name: correlation_r, value: $pair.summary.pooled_r, optional: true}
+  figures:
+    - $figure_series
+    - {from: $figure_map, optional: true}
+  data: [$pair, $readings, $find]

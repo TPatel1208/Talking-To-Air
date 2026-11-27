@@ -25,7 +25,7 @@ class EarthdataMCPClientTests(unittest.IsolatedAsyncioTestCase):
         self.all_names = set(ALL_RAW_TOOL_NAMES)
 
     def _settings(self, url=None):
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         return Settings(earthdata_mcp_url=url or self.server.url, earthdata_mcp_token=None)
 

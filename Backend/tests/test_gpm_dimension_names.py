@@ -13,11 +13,10 @@ per-variable ``DimensionNames`` attribute ("time,lon,lat"). Honoring that
 declaration is coordinate discovery, like the CF-metadata-primary lat/lon
 identification. These tests write a real
 dimension-scale-less HDF5 with h5py (no xarray writer can produce one) and
-drive it through the public open/stat seams.
+drive it through the public open/mask seams.
 """
 import gc
 import importlib.util
-import json
 import os
 import sys
 import tempfile
@@ -93,6 +92,14 @@ def _write_undeclared_phony_granule(path: str) -> None:
         var.attrs["units"] = "1"
 
 
+def _close_xarray_cached_files():
+    from xarray.backends.file_manager import FILE_CACHE
+
+    for handle in list(FILE_CACHE.values()):
+        handle.close()
+    FILE_CACHE.clear()
+
+
 @unittest.skipIf(
     any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
     "GPM dimension-names test dependencies are not installed",
@@ -101,7 +108,7 @@ class GpmDimensionNamesTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         from fake_earthdata_mcp import HandleVolume, build_fake_mcp, FakeEarthdataMCPServer
         from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         self._tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmpdir.cleanup)
@@ -116,6 +123,10 @@ class GpmDimensionNamesTests(unittest.IsolatedAsyncioTestCase):
         # change that holds a *strong* reference still fails here, which is a
         # real leak and should.
         self.addCleanup(gc.collect)
+        # Masking reads the file again from xarray's own file cache, which
+        # keeps the handle open after the test's objects are gone; Windows
+        # refuses to delete an open file.
+        self.addCleanup(_close_xarray_cached_files)
         self.volume = HandleVolume(self._tmpdir.name)
 
         server = FakeEarthdataMCPServer(build_fake_mcp({
@@ -130,7 +141,7 @@ class GpmDimensionNamesTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_open_handle_recovers_real_dim_names_from_dimension_names_attrs(self):
         from tta_backend.services.open_handle import open_handle
-        from tta_backend.utils.geo_utils import find_lat_coord, find_lon_coord
+        from tta_backend.domain.geo import find_lat_coord, find_lon_coord
 
         self.volume.add_hdf5("obs_gpm", _write_gpm_granule)
 
@@ -142,20 +153,39 @@ class GpmDimensionNamesTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(find_lat_coord(da), "lat")
         self.assertEqual(find_lon_coord(da), "lon")
 
-    async def test_compute_statistic_tool_answers_stats_for_a_gpm_shaped_granule(self):
-        from tta_backend.tools.satellite_tools.stat_tools import make_compute_statistic_tool
+    async def _mask_over_the_usa(self, handle):
+        """Open ``handle`` and mask its science variable to the USA, the
+        open -> identify -> mask seam every statistic goes through."""
+        import numpy as np
+
+        from tta_backend.domain.aggregation.aggregation_service import AggregationService
+        from tta_backend.domain.masking.geometry import mask_data_by_geometry
+        from tta_backend.services import admission
+        from tta_backend.services.open_handle import open_handle
+        from tta_backend.utils.plotting import RegionResolver
+
+        ds = await open_handle(handle, self.mcp_tools)
+        region = await RegionResolver().aresolve_location("usa")
+
+        def mask() -> np.ndarray:
+            da = AggregationService().to_dataarray(ds)
+            return np.asarray(mask_data_by_geometry(da, region["geometry"]).values, dtype=float)
+
+        # Off the loop, as the app's capabilities run it.
+        try:
+            return await admission.run_heavy(mask)
+        finally:
+            ds.close()
+
+    async def test_a_gpm_shaped_granule_masks_and_reduces_over_an_area(self):
+        import numpy as np
 
         self.volume.add_hdf5("obs_gpm", _write_gpm_granule)
 
-        compute_statistic_tool = make_compute_statistic_tool(self.mcp_tools)
-        raw = await compute_statistic_tool.ainvoke({
-            "handle": "obs_gpm", "location": "usa", "stats": ["mean"],
-        })
-        result = json.loads(raw)
+        values = await self._mask_over_the_usa("obs_gpm")
 
-        self.assertNotIn("error", result)
-        self.assertAlmostEqual(result["mean"], 2.0, places=5)  # float32 source values
-        self.assertGreater(result["n_pixels"], 0)
+        self.assertAlmostEqual(float(np.nanmean(values)), 2.0, places=5)  # float32 source values
+        self.assertGreater(int(np.isfinite(values).sum()), 0)
 
     async def test_root_header_variables_do_not_hide_the_science_groups(self):
         from tta_backend.services.open_handle import open_handle
@@ -172,23 +202,19 @@ class GpmDimensionNamesTests(unittest.IsolatedAsyncioTestCase):
         # arrays for them — identification can then refuse honestly.
         self.assertEqual(set(ds["precipTotRate"].dims), {"lnL", "ltL"})
 
-    async def test_stats_refuse_with_a_typed_error_when_nothing_declares_the_dims(self):
-        # Refusal path: no scales, no DimensionNames — the tool must answer
-        # a classified unsupported_grid error, never crash off-taxonomy and
-        # never claim "no data found" for data that is right there.
-        from tta_backend.tools.satellite_tools.stat_tools import make_compute_statistic_tool
+    async def test_masking_refuses_with_a_typed_error_when_nothing_declares_the_dims(self):
+        # Refusal path: no scales, no DimensionNames — the answer is a
+        # classified unsupported_grid error, never a crash off-taxonomy and
+        # never "no data found" for data that is right there.
+        from tta_backend.domain.errors import MCPToolError
 
         self.volume.add_hdf5("obs_mystery", _write_undeclared_phony_granule)
 
-        compute_statistic_tool = make_compute_statistic_tool(self.mcp_tools)
-        raw = await compute_statistic_tool.ainvoke({
-            "handle": "obs_mystery", "location": "usa", "stats": ["mean"],
-        })
-        result = json.loads(raw)
+        with self.assertRaises(MCPToolError) as raised:
+            await self._mask_over_the_usa("obs_mystery")
 
-        self.assertIn("error", result)
-        self.assertEqual(result["error"]["category"], "unsupported_grid")
-        self.assertNotIn("No valid data", str(result["error"]))
+        self.assertEqual(raised.exception.category, "unsupported_grid")
+        self.assertNotIn("No valid data", raised.exception.message)
 
 
 if __name__ == "__main__":

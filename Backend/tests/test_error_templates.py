@@ -48,32 +48,6 @@ class RenderErrorAnswerTests(unittest.TestCase):
             text = render_error_answer(category, "stage", "detail")
             self.assertTrue(text)
 
-    def test_rate_limited_answer_tells_the_user_to_wait_not_to_shrink_the_request(self):
-        """A language-model quota/429 is a 'wait and retry' condition, not an
-        'internal error' or a data-size problem — its answer must say so, so a
-        researcher does not respond by needlessly shrinking a request that was
-        never too large (the June 2023 AOD wildfire session, where every failure
-        rendered the generic contract text and the agent kept suggesting a
-        smaller region)."""
-        from tta_backend.config.error_templates import CATEGORY_RATE_LIMITED, render_error_answer
-
-        text = render_error_answer(CATEGORY_RATE_LIMITED, "earthdata agent")
-
-        self.assertNotIn("internal error", text)
-        self.assertIn("rate", text.lower())
-        self.assertIn("try again", text.lower())
-
-    def test_recursion_exhausted_answer_points_at_splitting_the_request(self):
-        """A recursion-limit stop means the workflow ran out of step budget, not
-        that the data or the question was bad — the answer must suggest fewer
-        periods/regions per request rather than 'internal error'."""
-        from tta_backend.config.error_templates import CATEGORY_RECURSION_EXHAUSTED, render_error_answer
-
-        text = render_error_answer(CATEGORY_RECURSION_EXHAUSTED, "earthdata agent")
-
-        self.assertNotIn("internal error", text)
-        self.assertIn("step", text.lower())
-
 
 class RenderTurnTimeoutAnswerTests(unittest.TestCase):
     def test_names_no_running_jobs_when_none_were_seen(self):
@@ -93,105 +67,12 @@ class RenderTurnTimeoutAnswerTests(unittest.TestCase):
         self.assertIn("job_def456", text)
 
 
-class RenderScopeNoteTests(unittest.TestCase):
-    def test_a_single_day_request_answered_by_a_monthly_mean_gets_a_disclosure_note(self):
-        """The substitution the researcher reads must say so —
-        a one-day request answered with the monthly mean names both scopes."""
-        from tta_backend.config.error_templates import render_scope_note
-
-        note = render_scope_note(
-            {"location": "California", "time_range": "2024-07-15/2024-07-15"},
-            {
-                "region_name": "California",
-                "start_date": "2024-07-01T00:00:00",
-                "end_date": "2024-07-31T23:59:59",
-                "cadence": "monthly",
-            },
-        )
-
-        self.assertIsNotNone(note)
-        self.assertIn("2024-07-15", note)
-        self.assertIn("monthly", note.lower())
-
-    def test_an_exact_match_adds_no_note(self):
-        """Regression: don't nag when delivered scope equals the request."""
-        from tta_backend.config.error_templates import render_scope_note
-
-        note = render_scope_note(
-            {"location": "California", "time_range": "2024-07-01/2024-07-31"},
-            {
-                "region_name": "California",
-                "start_date": "2024-07-01T00:00:00",
-                "end_date": "2024-07-31T00:00:00",
-                "cadence": "monthly",
-            },
-        )
-
-        self.assertIsNone(note)
-
-    def test_canonicalization_suffix_is_not_a_false_substitution(self):
-        """The geocoder canonicalizes "California" to
-        "California, United States". Same place, extra detail — the delivered
-        region only appends a canonicalization suffix, so it must NOT read as a
-        substitution ("you asked about California, but ... California, United
-        States")."""
-        from tta_backend.config.error_templates import render_scope_note
-
-        note = render_scope_note(
-            {"location": "California", "time_range": "2024-07-01/2024-07-31"},
-            {
-                "region_name": "California, United States",
-                "start_date": "2024-07-01T00:00:00",
-                "end_date": "2024-07-31T00:00:00",
-                "cadence": "monthly",
-            },
-        )
-
-        self.assertIsNone(note)
-
-    def test_an_abbreviated_component_is_not_a_false_substitution(self):
-        """"Los Angeles, CA" and the canonical "Los Angeles,
-        California, United States" name the same place — the leading locality
-        matches, so the mid-string CA→California expansion is not a
-        substitution."""
-        from tta_backend.config.error_templates import render_scope_note
-
-        note = render_scope_note(
-            {"location": "Los Angeles, CA", "time_range": "2024-07-01/2024-07-31"},
-            {
-                "region_name": "Los Angeles, California, United States",
-                "start_date": "2024-07-01T00:00:00",
-                "end_date": "2024-07-31T00:00:00",
-                "cadence": "monthly",
-            },
-        )
-
-        self.assertIsNone(note)
-
-    def test_a_genuine_region_substitution_still_warns(self):
-        """Canonicalization matching must not silence real substitutions: a request for one
-        place answered with a different place still names both."""
-        from tta_backend.config.error_templates import render_scope_note
-
-        note = render_scope_note(
-            {"location": "California", "time_range": "2024-07-01/2024-07-31"},
-            {
-                "region_name": "Nevada, United States",
-                "start_date": "2024-07-01T00:00:00",
-                "end_date": "2024-07-31T00:00:00",
-                "cadence": "monthly",
-            },
-        )
-
-        self.assertIsNotNone(note)
-        self.assertIn("California", note)
-        self.assertIn("Nevada", note)
-
+class RenderVariableNoteTests(unittest.TestCase):
     def test_variable_note_names_the_chosen_field_and_alternatives_when_ambiguous(self):
         """A high-ambiguity auto-pick discloses the chosen product AND the
         ranked alternatives, deterministically (no model prose), so a sensor
         fork is transparent and redirectable."""
-        from tta_backend.config.error_templates import render_variable_note
+        from tta_backend.domain.aggregation.variable_resolver import render_variable_note
 
         note = render_variable_note(
             "Terra MODIS Dark Target AOD 550",
@@ -206,7 +87,7 @@ class RenderScopeNoteTests(unittest.TestCase):
     def test_variable_note_is_a_brief_note_without_alternatives(self):
         """A medium-confidence lone pick gets a brief note naming only the
         chosen field -- no fork to list."""
-        from tta_backend.config.error_templates import render_variable_note
+        from tta_backend.domain.aggregation.variable_resolver import render_variable_note
 
         note = render_variable_note("Aerosol Optical Depth", [], ambiguous=False)
 
@@ -215,7 +96,7 @@ class RenderScopeNoteTests(unittest.TestCase):
         self.assertNotIn("Other products available", note)
 
     def test_variable_note_is_none_without_a_chosen_label(self):
-        from tta_backend.config.error_templates import render_variable_note
+        from tta_backend.domain.aggregation.variable_resolver import render_variable_note
 
         self.assertIsNone(render_variable_note(None, ["a", "b"]))
 

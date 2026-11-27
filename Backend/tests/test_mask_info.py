@@ -281,7 +281,7 @@ class MaskInfoAppliesToAggregationServiceTests(unittest.TestCase):
         import numpy as np
         import xarray as xr
 
-        from tta_backend.preprocessing.aggregation_service import AggregationService
+        from tta_backend.domain.aggregation.aggregation_service import AggregationService
 
         da = xr.DataArray(
             [[-999.0, 10.0], [600.0, 20.0]],
@@ -303,7 +303,7 @@ class MaskInfoAppliesToAggregationServiceTests(unittest.TestCase):
         import xarray as xr
 
         from tta_backend.datasets.mask_info import override_for
-        from tta_backend.preprocessing.aggregation_service import AggregationService
+        from tta_backend.domain.aggregation.aggregation_service import AggregationService
 
         # The dataset's own attrs are wrong for this (fictional) quirky collection.
         da = xr.DataArray(

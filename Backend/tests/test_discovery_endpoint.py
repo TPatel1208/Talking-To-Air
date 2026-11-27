@@ -27,8 +27,9 @@ class DiscoveryEndpointTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTest
         import httpx
         import tta_backend.api as api
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
-        from tta_backend.earthdata_mcp.toolset import load_earthdata_tools
-        from tta_backend.config.settings import Settings
+        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
+        from tta_backend.earthdata_mcp.workspace import bind_workspace
+        from tta_backend.infrastructure.settings import Settings
         from tta_backend.utils.streaming import current_user_id
 
         self.httpx = httpx
@@ -117,7 +118,7 @@ class DiscoveryEndpointTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTest
         self.addCleanup(self.server.stop)
 
         settings = Settings(earthdata_mcp_url=self.server.url, earthdata_mcp_token=None)
-        self.api.app.state.earthdata_mcp_tools = await load_earthdata_tools(settings, current_user_id)
+        self.api.app.state.earthdata_mcp_tools = bind_workspace(await load_raw_mcp_tools(settings), current_user_id)
         # Discovery endpoints read tools through earthdata_mcp_manager;
         # a bare ready-state stub is enough since these tests only need
         # `.state`/`.tools`, not the real connect/retry machinery.

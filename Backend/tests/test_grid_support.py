@@ -14,7 +14,7 @@ import xarray as xr
 from shapely.geometry import box
 
 from tta_backend.earthdata_mcp.results import CATEGORY_UNSUPPORTED_GRID, MCPToolError
-from tta_backend.utils.plotting import mask_data_by_geometry
+from tta_backend.domain.masking.geometry import mask_data_by_geometry
 
 
 class MaskGridSupportTests(unittest.TestCase):

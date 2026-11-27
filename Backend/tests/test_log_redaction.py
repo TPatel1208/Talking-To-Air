@@ -36,7 +36,7 @@ AQS_PARAMS = {
 
 
 def _settings(log_format="text"):
-    from tta_backend.config.settings import Settings
+    from tta_backend.infrastructure.settings import Settings
 
     return Settings(log_level="DEBUG", log_format=log_format)
 
@@ -70,7 +70,7 @@ class _LoggingSandbox(unittest.TestCase):
 
     def _configure_capturing(self, log_format="text"):
         """configure_logging on an empty root, capturing its stderr handler."""
-        from tta_backend.utils.logging import configure_logging
+        from tta_backend.infrastructure.logging import configure_logging
 
         stream = io.StringIO()
         with patch.object(sys, "stderr", stream):
@@ -111,7 +111,7 @@ class HttpxRequestLineTests(_LoggingSandbox):
         existing handlers must still never print the credential."""
         import asyncio
 
-        from tta_backend.utils.logging import configure_logging
+        from tta_backend.infrastructure.logging import configure_logging
 
         stream = io.StringIO()
         logging.getLogger().addHandler(logging.StreamHandler(stream))
@@ -143,7 +143,7 @@ class BackendLogLineTests(_LoggingSandbox):
             "error": ["Email and/or key are invalid."],
         }
 
-        logging.getLogger("tta_backend.tools.ground_sensor_tools.epa_aqs_tools").warning(
+        logging.getLogger("tta_backend.domain.monitors.aqs").warning(
             "aqs_error endpoint=%s header=%r", "list/states", header,
         )
 
@@ -178,7 +178,7 @@ class BackendLogLineTests(_LoggingSandbox):
         self.assertNotIn(AQS_KEY, output)
 
     def test_reconfiguring_does_not_stack_filters(self):
-        from tta_backend.utils.logging import configure_logging
+        from tta_backend.infrastructure.logging import configure_logging
 
         self._configure_capturing()
         configure_logging(_settings())

@@ -300,7 +300,7 @@ class BufferRefusalTests(unittest.IsolatedAsyncioTestCase):
         """The extent gate: 3000 miles is 11,270.2 deg^2 = 20,980,751 cells
         against a 4,000,000-cell limit."""
         from tta_backend.earthdata_mcp.results import CATEGORY_TOO_LARGE, MCPToolError
-        from tta_backend.preprocessing.frame_stack import MAX_FRAME_NATIVE_CELLS
+        from tta_backend.domain.aggregation.frame_stack import MAX_FRAME_NATIVE_CELLS
 
         with self.assertRaises(MCPToolError) as caught:
             self._resolve("within 3000 miles of NYC")
@@ -461,8 +461,10 @@ class BufferOriginTests(unittest.TestCase):
         )
 
     def test_a_buffer_survives_a_boundary_cells_self_heal_with_its_origin(self):
-        from tta_backend.utils.plotting import (
-            RegionResolver, apply_mask_region_type, mask_data_by_geometry,
+        from tta_backend.utils.plotting import RegionResolver
+        from tta_backend.domain.masking.geometry import (
+            apply_mask_region_type,
+            mask_data_by_geometry,
         )
 
         resolver = RegionResolver()

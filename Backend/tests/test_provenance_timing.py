@@ -25,7 +25,7 @@ REQUIRED_MODULES = [
 def _phase_samples(phase: str) -> tuple[float, float]:
     """(count, sum) currently recorded for ``phase``. Histograms are
     process-wide state, so every test below asserts on a delta."""
-    from tta_backend.utils.metrics import PIPELINE_PHASE_DURATION_SECONDS
+    from tta_backend.infrastructure.metrics import PIPELINE_PHASE_DURATION_SECONDS
 
     count = total = 0.0
     for metric in PIPELINE_PHASE_DURATION_SECONDS.collect():
@@ -75,7 +75,7 @@ _COL_INFO = {
 class EvidencePhaseTests(unittest.TestCase):
     def test_computing_evidence_records_an_evidence_phase(self):
         import xarray as xr
-        from tta_backend.tools.satellite_tools.plot_tools import _evidence
+        from tta_backend.domain.charts.provenance import evidence as _evidence
 
         ds = _tempo_shaped_dataset(xr)
         before = _phase_samples("evidence")
@@ -87,10 +87,10 @@ class EvidencePhaseTests(unittest.TestCase):
         """The number that turns a duration into a per-band cost, and so
         decides whether the fix is fewer bands or less data per band."""
         import xarray as xr
-        from tta_backend.tools.satellite_tools.plot_tools import _evidence
+        from tta_backend.domain.charts.provenance import evidence as _evidence
 
         ds = _tempo_shaped_dataset(xr)
-        with self.assertLogs("tta_backend.utils.phase_timing", level="INFO") as captured:
+        with self.assertLogs("tta_backend.infrastructure.phase_timing", level="INFO") as captured:
             facts = _evidence(ds, ds["column_amount_o3"], _COL_INFO, _global_region())
 
         record = next(r for r in captured.records if r._phase == "evidence")
@@ -103,10 +103,10 @@ class EvidencePhaseTests(unittest.TestCase):
         read is what makes that visible next to the science array's own size --
         and what would show a fix having landed."""
         import xarray as xr
-        from tta_backend.tools.satellite_tools.plot_tools import _evidence
+        from tta_backend.domain.charts.provenance import evidence as _evidence
 
         ds = _tempo_shaped_dataset(xr)
-        with self.assertLogs("tta_backend.utils.phase_timing", level="INFO") as captured:
+        with self.assertLogs("tta_backend.infrastructure.phase_timing", level="INFO") as captured:
             _evidence(ds, ds["column_amount_o3"], _COL_INFO, _global_region())
 
         record = next(r for r in captured.records if r._phase == "evidence")
@@ -119,7 +119,7 @@ class EvidencePhaseTests(unittest.TestCase):
         recorded, or the histogram silently describes only rich files and its
         percentiles stop meaning "what a plot pays for provenance"."""
         import xarray as xr
-        from tta_backend.tools.satellite_tools.plot_tools import _evidence
+        from tta_backend.domain.charts.provenance import evidence as _evidence
 
         ds = xr.Dataset(
             {"AOD": (("lat", "lon"), [[0.1, 0.2], [0.3, 0.4]], {"units": "1"})},
@@ -135,7 +135,7 @@ class EvidencePhaseTests(unittest.TestCase):
         """The early return does no work; timing it would put a near-zero
         sample in the histogram and drag the percentiles toward a case that
         never touches a band."""
-        from tta_backend.tools.satellite_tools.plot_tools import _evidence
+        from tta_backend.domain.charts.provenance import evidence as _evidence
 
         before = _phase_samples("evidence")
         self.assertEqual(_evidence(None, None, {}, _global_region()), [])
@@ -146,7 +146,7 @@ class EvidencePhaseTests(unittest.TestCase):
         """The body moved into a helper so the timer could wrap it. That is a
         refactor, and this is the guard that it stayed one."""
         import xarray as xr
-        from tta_backend.tools.satellite_tools.plot_tools import _evidence
+        from tta_backend.domain.charts.provenance import evidence as _evidence
 
         ds = _tempo_shaped_dataset(xr)
         facts = _evidence(ds, ds["column_amount_o3"], _COL_INFO, _global_region())
@@ -180,7 +180,7 @@ class DeferredScienceMeanTests(unittest.TestCase):
         """Wraps the real function, counting calls. The waste being fixed is
         measured in *passes over a lazy array*, so calls are the honest unit --
         a wall-clock assertion here would just measure the machine."""
-        from tta_backend.preprocessing import aggregation_service
+        from tta_backend.domain.aggregation import aggregation_service
 
         real = aggregation_service.area_weighted_mean
         calls = []
@@ -197,12 +197,12 @@ class DeferredScienceMeanTests(unittest.TestCase):
         from unittest.mock import patch
 
         import xarray as xr
-        from tta_backend.tools.satellite_tools import plot_tools
+        from tta_backend.domain.charts import provenance
 
         ds = _tempo_shaped_dataset(xr)
         counting, calls = self._counting_area_weighted_mean()
-        with patch.object(plot_tools, "area_weighted_mean", counting):
-            plot_tools._evidence(ds, ds["column_amount_o3"], _COL_INFO, _global_region())
+        with patch.object(provenance, "area_weighted_mean", counting):
+            provenance.evidence(ds, ds["column_amount_o3"], _COL_INFO, _global_region())
 
         # The context bands legitimately take their own means -- that is the
         # facts being produced. What must NOT happen is a pass over the science
@@ -215,10 +215,10 @@ class DeferredScienceMeanTests(unittest.TestCase):
 
     def test_the_deferral_is_visible_in_the_phase_log(self):
         import xarray as xr
-        from tta_backend.tools.satellite_tools.plot_tools import _evidence
+        from tta_backend.domain.charts.provenance import evidence as _evidence
 
         ds = _tempo_shaped_dataset(xr)
-        with self.assertLogs("tta_backend.utils.phase_timing", level="INFO") as captured:
+        with self.assertLogs("tta_backend.infrastructure.phase_timing", level="INFO") as captured:
             _evidence(ds, ds["column_amount_o3"], _COL_INFO, _global_region())
 
         record = next(r for r in captured.records if r._phase == "evidence")
@@ -228,7 +228,7 @@ class DeferredScienceMeanTests(unittest.TestCase):
         """Deferring must not mean dropping: the fact that DOES need the mean
         must still carry it, or the fix has silently removed a disclosure."""
         import xarray as xr
-        from tta_backend.tools.satellite_tools.plot_tools import _evidence
+        from tta_backend.domain.charts.provenance import evidence as _evidence
 
         ds = xr.Dataset(
             {
@@ -255,7 +255,7 @@ class DeferredScienceMeanTests(unittest.TestCase):
     def test_the_science_mean_is_computed_at_most_once(self):
         """Memoized, not merely deferred: two uncertainty bands must not mean
         two passes over a lazy array."""
-        from tta_backend.tools.satellite_tools.plot_tools import _DeferredScienceMean
+        from tta_backend.domain.charts.provenance import DeferredScienceMean as _DeferredScienceMean
 
         import xarray as xr
 
@@ -276,7 +276,7 @@ class DeferredScienceMeanTests(unittest.TestCase):
         evidence is additive and must never cost the chart."""
         import numpy as np
         import xarray as xr
-        from tta_backend.tools.satellite_tools.plot_tools import _DeferredScienceMean
+        from tta_backend.domain.charts.provenance import DeferredScienceMean as _DeferredScienceMean
 
         da = xr.DataArray(
             [[np.nan, np.nan], [np.nan, np.nan]],
@@ -291,7 +291,7 @@ class DeferredScienceMeanTests(unittest.TestCase):
         graph those are two full re-executions back to the source granules,
         which is what made this cost 226s; it must receive materialized data."""
         import xarray as xr
-        from tta_backend.tools.satellite_tools.plot_tools import _DeferredScienceMean
+        from tta_backend.domain.charts.provenance import DeferredScienceMean as _DeferredScienceMean
 
         try:
             import dask  # noqa: F401
@@ -312,7 +312,7 @@ class DeferredScienceMeanTests(unittest.TestCase):
             return 2.5
 
         deferred = _DeferredScienceMean(da)
-        import tta_backend.tools.satellite_tools.plot_tools as pt
+        import tta_backend.domain.charts.provenance as pt
         from unittest.mock import patch
 
         with patch.object(pt, "area_weighted_mean", spy):
@@ -328,7 +328,7 @@ class DeferredScienceMeanTests(unittest.TestCase):
 class RelatedVariablesPhaseTests(unittest.TestCase):
     def test_building_related_variables_records_its_own_phase(self):
         import xarray as xr
-        from tta_backend.tools.satellite_tools.plot_tools import _related_variables
+        from tta_backend.domain.charts.provenance import related_variables_view as _related_variables
 
         ds = _tempo_shaped_dataset(xr)
         before = _phase_samples("related_variables")
@@ -341,12 +341,12 @@ class RelatedVariablesPhaseTests(unittest.TestCase):
         opened file, or the registry's curated subset. Only the flag separates
         them, and only the Dataset path scales with the retrieval."""
         import xarray as xr
-        from tta_backend.tools.satellite_tools.plot_tools import _related_variables
+        from tta_backend.domain.charts.provenance import related_variables_view as _related_variables
 
         ds = _tempo_shaped_dataset(xr)
-        with self.assertLogs("tta_backend.utils.phase_timing", level="INFO") as from_ds:
+        with self.assertLogs("tta_backend.infrastructure.phase_timing", level="INFO") as from_ds:
             _related_variables(ds["column_amount_o3"], _COL_INFO, ds=ds)
-        with self.assertLogs("tta_backend.utils.phase_timing", level="INFO") as from_registry:
+        with self.assertLogs("tta_backend.infrastructure.phase_timing", level="INFO") as from_registry:
             _related_variables(ds["column_amount_o3"], _COL_INFO, ds=None)
 
         opened = next(r for r in from_ds.records if r._phase == "related_variables")
@@ -366,7 +366,7 @@ class ProvenancePhaseTests(unittest.TestCase):
 
     def test_attaching_reproducibility_records_a_provenance_phase(self):
         import xarray as xr
-        from tta_backend.tools.satellite_tools.plot_tools import _attach_reproducibility
+        from tta_backend.domain.charts.provenance import attach_reproducibility as _attach_reproducibility
 
         ds = _tempo_shaped_dataset(xr)
         before = _phase_samples("provenance")
@@ -382,7 +382,7 @@ class ProvenancePhaseTests(unittest.TestCase):
         related_variables is what remains unexplained, and that residual is the
         next thing to chase if the two known passes do not account for it."""
         import xarray as xr
-        from tta_backend.tools.satellite_tools.plot_tools import _attach_reproducibility
+        from tta_backend.domain.charts.provenance import attach_reproducibility as _attach_reproducibility
 
         ds = _tempo_shaped_dataset(xr)
         outer = _phase_samples("provenance")
@@ -399,7 +399,7 @@ class ProvenancePhaseTests(unittest.TestCase):
 
     def test_the_payload_is_unchanged_by_the_timing(self):
         import xarray as xr
-        from tta_backend.tools.satellite_tools.plot_tools import _attach_reproducibility
+        from tta_backend.domain.charts.provenance import attach_reproducibility as _attach_reproducibility
 
         ds = _tempo_shaped_dataset(xr)
         payload = _attach_reproducibility(
@@ -415,7 +415,7 @@ class ProvenancePhaseTests(unittest.TestCase):
 
 class PhaseVocabularyTests(unittest.TestCase):
     def test_the_provenance_phases_are_pre_declared_at_zero(self):
-        from tta_backend.utils.metrics import render_prometheus_metrics
+        from tta_backend.infrastructure.metrics import render_prometheus_metrics
 
         rendered = render_prometheus_metrics().decode()
 

@@ -91,7 +91,7 @@ class EdlTokenInjectionMatrixTests(ProcessCacheIsolation, unittest.IsolatedAsync
         self.server.start()
         self.addCleanup(self.server.stop)
 
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
 
         self.tools = await load_raw_mcp_tools(Settings(earthdata_mcp_url=self.server.url, earthdata_mcp_token=None))
@@ -215,7 +215,7 @@ class EdlTokenErrorClassificationTests(ProcessCacheIsolation, unittest.IsolatedA
         self.server.start()
         self.addCleanup(self.server.stop)
 
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
 
         self.tools = await load_raw_mcp_tools(Settings(earthdata_mcp_url=self.server.url, earthdata_mcp_token=None))

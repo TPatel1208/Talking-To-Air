@@ -35,7 +35,7 @@ class StoreTestCase(unittest.TestCase):
 
     def setUp(self):
         import tta_backend.services.cube_cache as cube_cache
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
 
         self.cube_cache = cube_cache
         # ignore_cleanup_errors because a cube write is deliberately
@@ -66,7 +66,7 @@ class StoreTestCase(unittest.TestCase):
         self.addCleanup(cube_cache.reset_for_test)
 
     def set_limits(self, **env):
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
 
         patcher = unittest.mock.patch.dict(os.environ, {k: str(v) for k, v in env.items()})
         patcher.start()
@@ -207,7 +207,7 @@ class RoundTripTests(StoreTestCase):
         import numpy as np
         import xarray as xr
 
-        from tta_backend.preprocessing.aggregation_service import AggregationService
+        from tta_backend.domain.aggregation.aggregation_service import AggregationService
 
         # scale_factor 2e13, valid_range packed [0, 30000] -> physical [0, 6e17].
         ds = xr.Dataset(
@@ -281,7 +281,7 @@ class RoundTripTests(StoreTestCase):
         import numpy as np
         import xarray as xr
 
-        from tta_backend.preprocessing.aggregation_service import AggregationService
+        from tta_backend.domain.aggregation.aggregation_service import AggregationService
 
         ds = xr.Dataset(
             {
@@ -560,6 +560,20 @@ class EvictionTests(StoreTestCase):
 
         self.assertIsNotNone(self.cube_cache.lookup("hot"))
 
+    def test_the_cube_just_read_survives_a_clock_that_never_moves(self):
+        """A coarse file clock gives a read and the write after it the same
+        time; the read must still count as the more recent access."""
+        from unittest.mock import patch
+
+        with patch("time.time_ns", return_value=1_800_000_000_000_000_000):
+            self.cube_cache.write_cube(self._big_dataset(1), "hot")
+            headroom = int(self._big_dataset(0).nbytes) + 2048
+            self.set_limits(CUBE_STORE_MAX_BYTES=self.cube_cache.store_size_bytes() + headroom)
+            for i in range(6):
+                self.assertIsNotNone(self.cube_cache.lookup("hot"), i)
+                self.cube_cache.write_cube(self._big_dataset(20 + i), f"frozen{i}")
+            self.assertIsNotNone(self.cube_cache.lookup("hot"))
+
     def _compressible_dataset(self, cells: int = 224):
         """Fill-dominated, so its on-disk size collapses while ``nbytes``
         stays large — the TEMPO L3 shape, where the geostationary scan only
@@ -665,7 +679,7 @@ class EvictionTests(StoreTestCase):
         peaks at 81.6 MiB now, in the background — and the two caps measure
         different things anyway (one disk, one memory), so comparing them was
         never meaningful. What matters is that a cube leaves room for another."""
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         from tta_backend.services.cube_cache import per_cube_disk_limit
 
         settings = Settings()
@@ -910,7 +924,7 @@ class OpenHandleCubeIntegrationTests(unittest.IsolatedAsyncioTestCase):
     set_limits = StoreTestCase.set_limits
 
     async def asyncSetUp(self):
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
         from fake_earthdata_mcp import FakeEarthdataMCPServer, HandleVolume, build_fake_mcp
 
@@ -1146,46 +1160,3 @@ class SourceDatasetIsNotMutatedTests(StoreTestCase):
         self.cube_cache.write_cube(ds, "nomutate2")
 
         self.assertIn("product/foo", ds.data_vars)
-
-
-@unittest.skipIf(
-    any(
-        importlib.util.find_spec(name) is None
-        for name in REQUIRED_MODULES + ["fastmcp", "langchain_mcp_adapters"]
-    ),
-    "chat stream test dependencies are not installed",
-)
-class TurnActivityWiringTests(unittest.IsolatedAsyncioTestCase):
-    """The cube writer holds off while a turn is in flight — which only works
-    if something actually tells it a turn is in flight."""
-
-    def setUp(self):
-        StoreTestCase.setUp(self)
-
-    async def test_a_chat_turn_marks_the_process_busy_for_the_whole_turn(self):
-        import json
-        from types import SimpleNamespace
-
-        from tta_backend.services.chart_service import ChartService
-        from tta_backend.services.chat_stream_service import ChatStreamService
-
-        cube_cache = self.cube_cache
-        seen = []
-
-        class RecordingAgent:
-            async def astream(self, input_, config, stream_mode):
-                seen.append(cube_cache.turn_is_active())
-                envelope = json.dumps({"summary": "done", "artifact_ids": [], "handles": []})
-                yield "messages", (SimpleNamespace(content=envelope, type="ai", tool_calls=None), {})
-
-        service = ChatStreamService(ChartService(), long_request_seconds=999)
-        [
-            event
-            async for event in service.stream_chat_events(
-                RecordingAgent(), RecordingAgent(), RecordingAgent(),
-                "Plot TROPOMI NO2 over New Jersey for 2024-01-15", "t", "u", "r",
-            )
-        ]
-
-        self.assertEqual(seen, [True])
-        self.assertFalse(cube_cache.turn_is_active())

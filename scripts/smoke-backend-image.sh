@@ -47,7 +47,7 @@ docker run -d --name "$tag-backend" --network "$net" \
   -e SUPABASE_URL=https://smoke-test.supabase.co \
   -e SUPABASE_PUBLISHABLE_KEY=smoke-publishable-key \
   -e GROQ_API_KEY=smoke -e GOOGLE_API_KEY=smoke \
-  -e AQS_API_KEY=smoke -e AQS_API_EMAIL=smoke@example.com \
+  -e NOMINATIM_CONTACT_EMAIL=smoke@example.com \
   "$image" >/dev/null
 
 deadline=$((SECONDS + timeout_s))

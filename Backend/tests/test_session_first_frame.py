@@ -8,11 +8,9 @@ something in it" -- ``first_frame_at`` does, and it is stamped when the turn
 first produces narration.
 
 The stamp is applied to the frame iterator at the one point both protocols
-share, *outside* ``ChatStreamService``. That placement is the property worth
-pinning: the fast path dispatches sub-agents directly and never enters
-``stream_response``, so
-anything that stamps from inside a route is one new route away from being
-wrong.
+share, *outside* the chat host. That placement is the property worth
+pinning: anything that stamps from inside the host is one new route away from
+being wrong.
 """
 from __future__ import annotations
 
@@ -22,6 +20,7 @@ import os
 import sys
 import unittest
 import uuid
+from types import SimpleNamespace
 from contextlib import ExitStack, contextmanager
 from unittest.mock import patch
 
@@ -44,7 +43,7 @@ class FirstFrameStampTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         import httpx
         import tta_backend.api as api
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
         from tta_backend.services.turn_event_log import TurnEventLog
         from tta_backend.services.turn_registry import TurnRegistry
 
@@ -86,8 +85,7 @@ class FirstFrameStampTests(unittest.IsolatedAsyncioTestCase):
 
         Whatever a route does internally, this is what ``POST /chat`` holds:
         an async iterator of rendered frames. Replacing it entirely is how
-        these tests speak for every route, including the ones that never go
-        near ``stream_response``.
+        these tests speak for every route the host may take.
         """
 
         def fake_stream_chat_events(*args, **kwargs):
@@ -112,9 +110,9 @@ class FirstFrameStampTests(unittest.IsolatedAsyncioTestCase):
             patch.object(self.api, "get_session_metadata", fake_metadata),
             patch.object(self.api, "session_belongs_to_user", fake_owns),
             patch.object(
-                self.api.chat_stream_service,
-                "stream_chat_events",
-                fake_stream_chat_events,
+                self.api.app.state,
+                "agent",
+                SimpleNamespace(stream_chat_events=fake_stream_chat_events),
             ),
         )
         with ExitStack() as stack:
@@ -155,13 +153,10 @@ class FirstFrameStampTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(self.stamped, [self.thread_id])
 
-    async def test_a_turn_that_never_enters_stream_response_still_lists(self):
-        """``stream_chat_events`` is replaced outright here: no route runs.
-
-        The fast path is exactly this shape from the stamp's point of view --
-        it dispatches ground/satellite directly and produces its own frames --
-        so a stamp that lived inside the supervisor's streaming layer would
-        leave every fast-pathed thread unlisted, which is most of them.
+    async def test_a_turn_whose_frames_come_from_anywhere_still_lists(self):
+        """``stream_chat_events`` is replaced outright here: no route runs, so
+        a stamp that lived inside the host's streaming would leave this thread
+        unlisted.
         """
 
         async def produce():
@@ -236,7 +231,7 @@ class FirstFrameStampTests(unittest.IsolatedAsyncioTestCase):
         registry never sees it. Rolling back must not stop new threads
         appearing in the sidebar -- a regression nobody would connect to the
         flag they changed."""
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
 
         async def produce():
             yield 'event: text\ndata: {"content": "hello"}\n\n'

@@ -29,7 +29,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from tta_backend.config.settings import get_settings
+from tta_backend.infrastructure.access_clock import stamp_access
+from tta_backend.infrastructure.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -40,10 +41,6 @@ _STAGING_PREFIX = "staging-"
 # Measured on real stacks: level 9 saves only 0.0-0.2% for 1.1-1.9x the CPU,
 # so use the zlib default.
 _GZIP_LEVEL = 6
-
-#: The values, laid out as ``(1 + n_frames, ny, nx)`` float32: the period mean
-#: is plane 0, and the frames follow in axis order.
-_PERIOD_INDEX = 0
 
 #: The statistic a ``FrameStack``'s own top-level values are, and so the one an
 #: entry holds unless it was told otherwise. It is a plain string rather than a
@@ -302,7 +299,7 @@ def sweep_store(current_pipeline_version: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _entries() -> list[tuple[float, int, str]]:
+def _entries() -> list[tuple[int, int, str]]:
     """``(last_access, bytes_on_disk, key)`` for every complete entry.
 
     **Real bytes on disk**, walked, not ``values.nbytes``. ``cube_store``
@@ -313,7 +310,7 @@ def _entries() -> list[tuple[float, int, str]]:
     the same mistake three times over on exactly the sparse stacks that cost
     least.
     """
-    out: list[tuple[float, int, str]] = []
+    out: list[tuple[int, int, str]] = []
     try:
         scanned = list(os.scandir(_store_root()))
     except OSError:
@@ -324,7 +321,7 @@ def _entries() -> list[tuple[float, int, str]]:
         if _read_manifest(entry.name) is None:
             continue  # incomplete: the manifest is the completion marker
         try:
-            out.append((entry.stat(follow_symlinks=False).st_mtime,
+            out.append((entry.stat(follow_symlinks=False).st_mtime_ns,
                         _entry_bytes(entry.path), entry.name))
         except OSError:
             continue
@@ -404,11 +401,10 @@ def evict_to_fit(incoming_bytes: int, *, protect: Iterable[str] = ()) -> int:
 
 
 def _touch(key: str) -> None:
-    """Record a hit as an access, so LRU means what it says. The extract
-    cache's pruner learned this the hard way: reads that don't touch mtime make
-    a hot entry indistinguishable from an abandoned one."""
+    """Record an access, so LRU means what it says: reads that don't touch
+    mtime make a hot entry indistinguishable from an abandoned one."""
     try:
-        os.utime(_entry_dir(key), None)
+        stamp_access(_entry_dir(key))
     except OSError:
         pass
 
@@ -469,6 +465,8 @@ def _write_entry(
     except Exception:
         shutil.rmtree(staging, ignore_errors=True)
         raise
+    # A write is an access too, stamped on the same clock as reads.
+    _touch(key)
 
 
 def _store_root() -> str:
@@ -518,107 +516,16 @@ def _fsync(path: str) -> None:
 
 
 def _shape(source: Any) -> list[int]:
-    """The stored layout of a stack *or* a plane — and identical for every
+    """The stored layout of a stack *or* a plane -- and identical for every
     plane of one chart, which is exactly why it cannot be the thing that tells
     two of them apart."""
-    n_frames, ny, nx = (int(v) for v in source.values.shape)
-    return [n_frames + 1, ny, nx]
+    from tta_backend.domain.charts.media import stored_shape
+
+    return stored_shape(source)
 
 
 def _axis_block(stack: Any, *, pipeline_version: str) -> dict[str, Any]:
-    """Everything about a frame stack except its values.
+    """Everything about a frame stack except its values (``domain.charts.media.axis_block``)."""
+    from tta_backend.domain.charts.media import axis_block
 
-    Rounded and coerced to plain Python here rather than at the call site: this
-    lands in jsonb, and a numpy scalar or a float32 is not JSON-serializable.
-    """
-    # Local, not module-scope: ``frame_stack`` imports xarray, and ``api.py``
-    # imports this module at module scope — so a top-level import here would
-    # pull the whole scientific stack into API startup, which is exactly the
-    # cost ``warmup.warm_render_path`` exists to schedule deliberately.
-    from tta_backend.preprocessing.frame_stack import POOLED_SCALE_BASIS
-
-    block = {
-        "frames": [
-            {
-                "t_start": frame.t_start,
-                "t_end": frame.t_end,
-                "n_granules": int(frame.n_granules),
-                "valid_fraction": float(frame.valid_fraction),
-                # Absent, never zero: "QA rejected everything" and "QA never
-                # ran" are different facts about an empty-looking frame.
-                "qa_pass_rate": (
-                    None if frame.qa_pass_rate is None else float(frame.qa_pass_rate)
-                ),
-                "statistics": {k: float(v) if k != "count" else int(v)
-                               for k, v in frame.statistics.items()},
-            }
-            for frame in stack.frames
-        ],
-        # How to read the blob, for a consumer that has one. The realized cell
-        # count, never the 20,000 ceiling: integer coarsening quantizes, so a
-        # real grid lands at 70-96% of what was asked for.
-        "shape": _shape(stack),
-        "dtype": "float32",
-        "period_index": _PERIOD_INDEX,
-        "lats": [round(float(v), 6) for v in stack.lats],
-        "lons": [round(float(v), 6) for v in stack.lons],
-        "cells_per_frame": int(stack.cells_per_frame),
-        "cadence": stack.cadence,
-        "tier": stack.tier,
-        "buckets_per_frame": int(stack.buckets_per_frame),
-        "coarsen_k": [int(k) for k in stack.coarsen_k],
-        "delta": stack.delta,
-        # Separate from `delta`: this asks whether the planes in this blob
-        # average to the period plane. Neither delta bounds the other.
-        "frame_grid_delta": stack.frame_grid_delta,
-        "value_range": (
-            None if stack.value_range is None
-            else [float(v) for v in stack.value_range]
-        ),
-        # Describes how value_range was computed, which two numbers can't
-        # convey. This scale is the scrubber's only, never the Map tab's.
-        "scale_basis": POOLED_SCALE_BASIS,
-        # Frames are never served across a version change; this makes that
-        # checkable on old charts.
-        "pipeline_version": pipeline_version,
-    }
-    planes = {
-        name: _plane_block(plane)
-        for name, plane in (getattr(stack, "planes", None) or {}).items()
-    }
-    # Absent, not empty, on a chart with no planes. Nothing upstream asks for
-    # one yet, so every payload on the wire must stay byte-identical to the one
-    # that shipped before this — and an always-present `"planes": {}` would be
-    # a change to every chart ever plotted, in service of saving one `?? {}` in
-    # a consumer that has to handle the key's absence on old rows regardless.
-    if planes:
-        block["planes"] = planes
-    return block
-
-
-def _plane_block(plane: Any) -> dict[str, Any]:
-    """One statistic's metadata: ``StatisticPlane`` minus the arrays.
-
-    Exactly the fields that genuinely differ per plane, and deliberately no
-    others. ``t_start``/``t_end``/``n_granules``/``valid_fraction``/
-    ``qa_pass_rate`` describe the *interval* and ``statistics`` is the per-frame
-    regional scalar off the **mean** field, not this plane's peak. Grid,
-    shape, block size, cadence and tier are shared by every plane, so they
-    aren't copied here (one source per value).
-    """
-    return {
-        # This plane's own 2-98 range, not the mean's: a max plane on the
-        # mean's scale would saturate at its peaks.
-        "value_range": (
-            None if plane.value_range is None
-            else [float(v) for v in plane.value_range]
-        ),
-        # Reduced across frames by THIS plane's own statistic, and carrying its
-        # own basis string saying so. A shared basis would be a particularly
-        # quiet falsehood: a selection plane's figure is 0.0 under its own
-        # basis and large under the mean's.
-        "frame_grid_delta": plane.frame_grid_delta,
-        # Max plane only; explicitly None elsewhere ("no such quantity",
-        # which differs from "not measured").
-        "extent_overstatement": plane.extent_overstatement,
-    }
+    return axis_block(stack, pipeline_version=pipeline_version)

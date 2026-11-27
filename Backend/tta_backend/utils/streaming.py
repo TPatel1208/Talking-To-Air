@@ -1,161 +1,61 @@
 """
-Shared stream_response for supervisor, ground, and satellite agents.
-
-Yields:
-    ("tool_call", {"name": str, "args": dict})
-    ("status", {"message": str})
-    ("tool_result", {"name": str, "content": str})
-    ("text", str)
-    ("job_progress", {"job_handle": str, "status": str, "progress": Any, "phase": Any, "message": str | None})
-    ("chart_payload", dict)  # full render payload — see utils.streaming.emit_chart
-    ("variable_choice", dict)  # deterministic picker — see utils.streaming.emit_variable_choice
-    ("structured_response", BaseModel)  # an agent's response_format answer
+Request-scoped state the chat host binds for the helpers it calls: the status
+emitter, the authenticated user, the per-turn call budget and the MCP
+transport-failure breaker state.
 """
 
-import asyncio
 import logging
 from collections.abc import AsyncGenerator, AsyncIterator, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, Callable, Optional
 
-from tta_backend.config.workflow_stages import STAGE_WORKING
-from tta_backend.utils.message_utils import flatten_text_content
-from tta_backend.utils.phase_timing import record_phase
-
 logger = logging.getLogger(__name__)
 
-# The heartbeat threshold is on the order of ten seconds — a watchdog
-# alongside stream_response's queue consumer checks idle time on this cadence
-# and emits a "still working" status once idle crosses the threshold.
+# How long a live turn may stay silent before the host writes a "still
+# working" status line.
 HEARTBEAT_INTERVAL_SECONDS = 10.0
-HEARTBEAT_CHECK_SECONDS = 1.0
 
 _status_emitter: ContextVar[Optional[Callable[..., None]]] = ContextVar(
     "status_emitter",
     default=None,
 )
-_turn_started_at: ContextVar[Optional[float]] = ContextVar("turn_started_at", default=None)
-_job_progress_emitter: ContextVar[Optional[Callable[[dict[str, Any]], None]]] = ContextVar(
-    "job_progress_emitter",
-    default=None,
-)
-_chart_emitter: ContextVar[Optional[Callable[[dict[str, Any]], None]]] = ContextVar(
-    "chart_emitter",
-    default=None,
-)
-_variable_choice_emitter: ContextVar[Optional[Callable[[dict[str, Any]], None]]] = ContextVar(
-    "variable_choice_emitter",
-    default=None,
-)
-_current_thread_id: ContextVar[Optional[str]] = ContextVar("current_thread_id", default=None)
 _current_user_id: ContextVar[Optional[str]] = ContextVar("current_user_id", default=None)
-_current_user_message: ContextVar[Optional[str]] = ContextVar("current_user_message", default=None)
-_ground_validation_allowed: ContextVar[bool] = ContextVar("ground_validation_allowed", default=True)
-# (lane id, lane label) of the dispatch item whose run is in
-# progress. Narration emitted inside it is tagged with the lane, so parallel
-# sub-agents' statuses can be shown apart. None outside a dispatch.
-_dispatch_lane: ContextVar[Optional[tuple[str, str]]] = ContextVar("dispatch_lane", default=None)
 _call_budget: ContextVar[Optional[dict[str, Any]]] = ContextVar("call_budget", default=None)
-# Per-turn MCP transport-failure circuit breaker state (storm containment,
-# 2026-07-20). A mutable dict {"consecutive": int, "tripped": bool} bound once
-# per turn — mutated in place, never re-``set()``, so it survives the ToolNode
-# gather-Task context copy exactly like _call_budget does (see
-# get_mcp_failure_state / get_call_budget).
+# Per-turn MCP transport-failure circuit breaker state: a mutable dict
+# {"consecutive": int, "tripped": bool}, mutated in place so every task copy
+# of the context sees the same object. Unbound (None) means the breaker is
+# inert.
 _mcp_failure_state: ContextVar[Optional[dict[str, Any]]] = ContextVar("mcp_failure_state", default=None)
 
 
-def emit_status(message: str, *, stage: str | None = None, detail: Any = None) -> None:
-    """Emit a user-visible progress message for the active SSE stream.
+def bind_status_emitter(emitter: Callable[..., None]) -> None:
+    """Send ``emit_status`` calls made from the current context, and the tasks
+    and threads it starts, to ``emitter(message, stage=..., detail=...)``."""
+    _status_emitter.set(emitter)
 
-    ``stage``/``detail`` are additive structured fields — a small
-    closed vocabulary (config.workflow_stages) driving the frontend's
-    workflow strip and the eval's stage-sequence assertions. Omitting them
-    keeps producing the bare ``{"message": ...}`` shape earlier callers and
-    tests already depend on. A stage emission is also logged (``stage_
-    reached``) with the current thread and this turn's elapsed time, so
-    per-stage latency is measurable from production traffic.
-    """
+
+def emit_status(message: str, *, stage: str | None = None, detail: Any = None) -> None:
+    """Emit a user-visible progress message for the active stream.
+
+    ``stage``/``detail`` are additive structured fields from a small closed
+    vocabulary (config.workflow_stages) that drives the frontend's workflow
+    strip. A stage emission is also logged (``stage_reached``)."""
     emitter = _status_emitter.get()
     if emitter and message:
         emitter(str(message), stage=stage, detail=detail)
     if stage:
-        started = _turn_started_at.get()
-        elapsed = None
-        if started is not None:
-            try:
-                elapsed = round(asyncio.get_running_loop().time() - started, 3)
-            except RuntimeError:
-                elapsed = None
-        logger.info(
-            "stage_reached",
-            extra={"_stage": stage, "_thread_id": current_thread_id(), "_elapsed_seconds": elapsed},
-        )
-
-
-def emit_job_progress(
-    job_handle: str,
-    status: str,
-    progress: float | None = None,
-    phase: str | None = None,
-    message: str | None = None,
-    note: str | None = None,
-) -> None:
-    """Emit a structured retrieval-job progress event for the active SSE stream.
-
-    ``note`` is an additive plain-language line the jobs panel renders under
-    the row (today: the provider-paused guidance from
-    services.retrieval_composites.annotate_paused). Always present in the
-    payload — a later event without one must clear a stale note when the
-    frontend merges events into its row."""
-    emitter = _job_progress_emitter.get()
-    if emitter:
-        emitter({
-            "job_handle": job_handle,
-            "status": status,
-            "progress": progress,
-            "phase": phase,
-            "message": message,
-            "note": note,
-        })
-
-
-def emit_chart(payload: dict[str, Any]) -> None:
-    """Emit a full chart render payload for the active SSE stream, out-of-band
-    from the tool's model-facing return value (two-audience split: the
-    model gets a compact summary, the frontend gets this full payload via the
-    existing chart/artifact pipeline)."""
-    emitter = _chart_emitter.get()
-    if emitter:
-        emitter(payload)
-
-
-def emit_variable_choice(payload: dict[str, Any]) -> None:
-    """Emit the deterministic variable-choice picker for the active SSE
-    stream, out-of-band from the tool's model-facing return value -- the same
-    two-audience split as emit_chart. The model gets a compact, size-bounded
-    'a picker was shown' tool result; the frontend gets THIS full, uncapped
-    candidate list, guaranteed to be exactly what the variable resolver computed
-    (never narrated or truncated by the model). run_satellite captures it and
-    fills each candidate's auto-send prompt from the original request."""
-    emitter = _variable_choice_emitter.get()
-    if emitter:
-        emitter(payload)
+        logger.info("stage_reached", extra={"_stage": stage})
 
 
 def get_call_budget() -> dict[str, Any]:
-    """Return the current request's mutable per-agent call-budget counters.
+    """Return the current turn's mutable per-turn counters.
 
-    langgraph.prebuilt.tool_node.ToolNode wraps every tool call in
-    asyncio.gather(), which spawns a fresh Task with a *copied* context for
-    each call — a plain ContextVar.set() inside that Task never becomes
-    visible to a sibling Task spawned later from the same parent context.
-    A dict survives that boundary: stream_response sets this ContextVar
-    once, early, in the context that becomes every such Task's parent, and
-    callers mutate the dict in place rather than re-``set()``ing the
-    ContextVar — the mutation is visible through every context copy because
-    it is the same object, not a new binding.
-    """
+    A task started from this context gets a *copy* of it, so a plain
+    ContextVar.set() inside one task is invisible to its siblings. A dict
+    survives that boundary: it is set once, early, in the context that
+    becomes every such task's parent, and callers mutate it in place rather
+    than re-``set()``ing the ContextVar."""
     budget = _call_budget.get()
     if budget is None:
         budget = {}
@@ -165,24 +65,18 @@ def get_call_budget() -> dict[str, Any]:
 
 def get_mcp_failure_state() -> dict[str, Any] | None:
     """The active turn's MCP transport-failure circuit-breaker state, or None
-    when called outside a chat turn.
+    when none is bound.
 
     ``earthdata_mcp.results.call_tool`` reads this: on a transport/timeout
     failure it increments ``consecutive`` and, once that crosses
-    ``settings.mcp_transport_failure_ceiling``, sets ``tripped`` so every later
-    MCP call this turn short-circuits instead of opening another doomed,
-    reconnect-storming session. A ``None`` return (the jobs/discovery endpoints,
-    which call MCP tools with a user id bound but no stream_response turn) means
-    the breaker is inert — those callers are never broken by a chat turn's storm.
+    ``settings.mcp_transport_failure_ceiling``, sets ``tripped`` so later MCP
+    calls short-circuit instead of opening another failing session. A
+    ``None`` return means the breaker is inert.
 
     Unlike ``get_call_budget`` this never lazily creates the dict: an unbound
     caller must read as inert, not silently start its own breaker in a context
     that will be discarded."""
     return _mcp_failure_state.get()
-
-
-def current_thread_id() -> str | None:
-    return _current_thread_id.get()
 
 
 def current_user_id() -> str | None:
@@ -191,67 +85,9 @@ def current_user_id() -> str | None:
     return _current_user_id.get()
 
 
-def current_user_message() -> str | None:
-    """The researcher's message for the active chat turn, exactly as sent.
-    The dispatch layer puts this in front of every sub-agent task, so
-    the researcher's own words reach the sub-agent without the supervisor
-    model writing them."""
-    return _current_user_message.get()
-
-
-@contextmanager
-def user_message_context(message: str) -> Iterator[None]:
-    """Bind ``current_user_message()`` for one chat turn (see
-    ChatStreamService.stream_chat_events)."""
-    token = _current_user_message.set(message)
-    try:
-        yield
-    finally:
-        _current_user_message.reset(token)
-
-
-def ground_validation_allowed() -> bool:
-    """Whether the satellite agent's own ground tools (validate_against_ground,
-    exceedance_overlay) may run for the task in progress. Under the
-    supervisor's dispatch, only a satellite request whose intent is compare
-    may; ground data is otherwise the supervisor's to request. True outside a
-    dispatch, so the router fast path keeps every tool."""
-    return _ground_validation_allowed.get()
-
-
-@contextmanager
-def ground_validation_scope(allowed: bool) -> Iterator[None]:
-    """Bind ``ground_validation_allowed()`` for one sub-agent run. Set before
-    the run starts, so every ToolNode gather-Task the run spawns copies it."""
-    token = _ground_validation_allowed.set(allowed)
-    try:
-        yield
-    finally:
-        _ground_validation_allowed.reset(token)
-
-
-@contextmanager
-def dispatch_lane_scope(lane_id: str, label: str) -> Iterator[None]:
-    """Tag every status/job_progress event emitted inside with this lane."""
-    token = _dispatch_lane.set((lane_id, label))
-    try:
-        yield
-    finally:
-        _dispatch_lane.reset(token)
-
-
-def _with_lane(payload: dict[str, Any]) -> dict[str, Any]:
-    lane = _dispatch_lane.get()
-    if lane is None:
-        return payload
-    return {**payload, "lane": lane[0], "lane_label": lane[1]}
-
-
 @contextmanager
 def user_id_context(user_id: str) -> Iterator[None]:
-    """Bind ``current_user_id()`` for non-chat endpoints (e.g. the jobs
-    endpoint) that call workspace-bound MCP tools outside of stream_response,
-    which normally sets this for the duration of a chat turn."""
+    """Bind ``current_user_id()`` for the duration of the block."""
     token = _current_user_id.set(user_id)
     try:
         yield
@@ -275,264 +111,3 @@ async def iter_with_user_id(user_id: str, chunks: AsyncIterator[Any]) -> AsyncGe
             except StopAsyncIteration:
                 return
         yield chunk
-
-
-def _message_text_chunk(message: Any) -> str:
-    tool_calls = getattr(message, "tool_calls", None)
-    if tool_calls:
-        return ""
-    content = getattr(message, "content", "")
-    if not isinstance(content, str) or not content:
-        return ""
-    message_type = getattr(message, "type", "")
-    if message_type in {"human", "system", "tool"}:
-        return ""
-    return content
-
-
-async def stream_response(
-    agent: Any,
-    user_input: str,
-    thread_id: str,
-    thread_ref: Optional[dict[str, Any]] = None,
-    user_id: Optional[str] = None,
-) -> AsyncGenerator[tuple[str, Any], None]:
-    """
-    Stream one conversation turn, yielding (event_type, data) tuples.
-
-    Status events can be published from nested tools with emit_status(...).
-    """
-    if thread_ref is not None:
-        thread_ref["id"] = thread_id
-
-    # recursion_limit is stated explicitly (not left to LangGraph's implicit
-    # default) so the graph's superstep budget is an intentional, tunable
-    # ceiling — a runaway ReAct loop stops here rather than silently at
-    # whatever the library's default happens to be (storm diagnosis 2026-07-20).
-    from tta_backend.config.settings import get_settings
-
-    config = {
-        "configurable": {"thread_id": thread_id},
-        "recursion_limit": get_settings().agent_recursion_limit,
-    }
-    queue: asyncio.Queue[Any] = asyncio.Queue()
-    done = object()
-    loop = asyncio.get_running_loop()
-    parent_emitter = _status_emitter.get()
-    parent_job_progress_emitter = _job_progress_emitter.get()
-    parent_chart_emitter = _chart_emitter.get()
-    parent_variable_choice_emitter = _variable_choice_emitter.get()
-    # Last-activity clock the heartbeat watchdog polls (below) — touched by
-    # every real event this turn publishes, including a bubbled event from a
-    # nested stream_response call, so the heartbeat only ever fires during
-    # genuine silence, never while a nested sub-agent is itself narrating.
-    last_activity = {"t": loop.time()}
-
-    def _touch() -> None:
-        last_activity["t"] = loop.time()
-
-    def publish_status(message: str, *, stage: str | None = None, detail: Any = None) -> None:
-        _touch()
-        if parent_emitter:
-            parent_emitter(message, stage=stage, detail=detail)
-        payload: dict[str, Any] = {"message": message}
-        if stage is not None:
-            payload["stage"] = stage
-        if detail is not None:
-            payload["detail"] = detail
-        loop.call_soon_threadsafe(queue.put_nowait, ("status", _with_lane(payload)))
-
-    def publish_job_progress(data: dict[str, Any]) -> None:
-        _touch()
-        data = _with_lane(data)
-        if parent_job_progress_emitter:
-            parent_job_progress_emitter(data)
-        loop.call_soon_threadsafe(queue.put_nowait, ("job_progress", data))
-
-    def publish_chart_payload(data: dict[str, Any]) -> None:
-        _touch()
-        if parent_chart_emitter:
-            parent_chart_emitter(data)
-        loop.call_soon_threadsafe(queue.put_nowait, ("chart_payload", data))
-
-    def publish_variable_choice(data: dict[str, Any]) -> None:
-        _touch()
-        if parent_variable_choice_emitter:
-            parent_variable_choice_emitter(data)
-        loop.call_soon_threadsafe(queue.put_nowait, ("variable_choice", data))
-
-    async def publish(event_type: str, data: Any) -> None:
-        _touch()
-        await queue.put((event_type, data))
-
-    async def watchdog() -> None:
-        # Owned by the streaming layer, not the tools (Implementation
-        # Decisions): stalls a chat turn currently narrates nothing for
-        # minutes at a time (46-55s provider rate-limit sleeps, live-
-        # verified 2026-07-07) — this covers that silence with an honest,
-        # observation-only "still working" status once idle crosses the
-        # threshold, and stops as soon as _touch() sees a real event.
-        while True:
-            await asyncio.sleep(HEARTBEAT_CHECK_SECONDS)
-            idle = loop.time() - last_activity["t"]
-            if idle >= HEARTBEAT_INTERVAL_SECONDS:
-                publish_status(
-                    f"Still working — {int(idle)}s elapsed",
-                    stage=STAGE_WORKING,
-                    detail=int(idle),
-                )
-
-    async def produce() -> None:
-        # Track whether messages stream emitted any text this turn.
-        # If it didn't (e.g. model returned a complete message without streaming),
-        # the updates fallback below will carry the response instead.
-        emitted_message_tokens = False
-        # One LangGraph superstep's wall clock, and how many text chunks
-        # streamed inside it. The count is the diagnostic half: a node that
-        # streamed 400 chunks over 40s was working the whole time, whereas
-        # one that streamed *nothing* for 107s and then delivered a finished
-        # message was blocked on a single provider call -- and those two look
-        # identical in a duration alone. The silent case is the one that
-        # went unattributed in the 2026-08-07 trace.
-        step_started = loop.time()
-        streamed_chunks = 0
-        try:
-            async for stream_mode, chunk in agent.astream(
-                {"messages": [{"role": "user", "content": user_input}]},
-                config=config,
-                stream_mode=["updates", "messages"],
-            ):
-                if stream_mode == "messages":
-                    # messages stream owns all LLM text output.
-                    if isinstance(chunk, tuple) and len(chunk) == 2:
-                        first, second = chunk
-                        message = second if hasattr(second, "content") else first
-                    else:
-                        message = chunk
-                    text = _message_text_chunk(message)
-                    if text:
-                        emitted_message_tokens = True
-                        streamed_chunks += 1
-                        await publish("text", text)
-                    continue
-
-                if stream_mode != "updates":
-                    continue
-
-                # Recorded once per chunk rather than once per node: the
-                # duration is the gap since the previous superstep, and
-                # charging it again to each node in a multi-node chunk would
-                # inflate the histogram by the fan-out.
-                record_phase(
-                    "agent_step",
-                    loop.time() - step_started,
-                    node=",".join(chunk) or "unknown",
-                    streamed_chunks=streamed_chunks,
-                )
-                step_started = loop.time()
-                streamed_chunks = 0
-
-                # updates stream owns tool calls and tool results only.
-                # AIMessage content is intentionally not published here — the
-                # messages stream handles it. Publishing from both paths is what
-                # produces duplicate responses.
-                for _node, data in chunk.items():
-                    if not isinstance(data, dict):
-                        continue
-                    structured = data.get("structured_response")
-                    if structured is not None:
-                        await publish("structured_response", structured)
-                    for msg in data.get("messages", []):
-                        if hasattr(msg, "tool_calls") and msg.tool_calls:
-                            for tc in msg.tool_calls:
-                                await publish("tool_call", {"name": tc["name"], "args": tc["args"]})
-                        elif hasattr(msg, "name") and msg.name:
-                            raw = flatten_text_content(msg.content)
-                            await publish("tool_result", {"name": msg.name, "content": raw})
-                        elif hasattr(msg, "content") and msg.content:
-                            # Fallback: messages stream emitted nothing this turn,
-                            # so this AIMessage is the only copy of the response.
-                            # Log it so we can confirm this path is only hit when
-                            # the messages stream is genuinely silent (not as a
-                            # duplicate). Once logs confirm it's safe, remove this.
-                            if not emitted_message_tokens:
-                                import logging
-                                text = flatten_text_content(msg.content)
-                                logging.getLogger(__name__).warning(
-                                    "updates_aiMessage_fallback",
-                                    extra={
-                                        "_node": _node,
-                                        "_content_preview": text[:100],
-                                        "_thread_id": thread_id,
-                                    },
-                                )
-                                await publish("text", text)
-        except Exception as exc:
-            await queue.put(("__error__", exc))
-        finally:
-            await queue.put(done)
-
-    token = _status_emitter.set(publish_status)
-    job_progress_token = _job_progress_emitter.set(publish_job_progress)
-    chart_token = _chart_emitter.set(publish_chart_payload)
-    variable_choice_token = _variable_choice_emitter.set(publish_variable_choice)
-    thread_token = _current_thread_id.set(thread_id)
-    # Same "set once, outermost wins" pattern as call_budget/turn_started_at
-    # below: a nested stream_response call (run_ground/run_satellite's own
-    # inner stream) never passes user_id, so this must not clobber an
-    # outer-bound value back to None — the caller that already bound it via
-    # user_id_context stays in effect for the nested call.
-    user_token = None
-    if user_id is not None and _current_user_id.get() is None:
-        user_token = _current_user_id.set(user_id)
-    # Established once, before produce()'s Task exists, so every ToolNode
-    # gather-Task this agent's own run spawns copies a context that already
-    # holds a reference to the same budget dict — see get_call_budget().
-    # A nested stream_response call (e.g. run_satellite's inner stream)
-    # reuses the outer holder rather than resetting it.
-    call_budget_token = None
-    if _call_budget.get() is None:
-        call_budget_token = _call_budget.set({})
-    # Same "set once, outermost wins, mutate in place" contract as call_budget
-    # above — bound here (before produce()'s Task exists) so every ToolNode
-    # gather-Task copies a context already referencing this same dict, and
-    # call_tool's in-place increments/short-circuit are visible across them.
-    mcp_failure_token = None
-    if _mcp_failure_state.get() is None:
-        mcp_failure_token = _mcp_failure_state.set({"consecutive": 0, "tripped": False})
-    # Same "set once, outermost wins" pattern as call_budget above — a
-    # nested stream_response call (run_satellite's inner stream) reuses the
-    # outer turn's start time, so stage_reached's elapsed is measured
-    # against the whole request, not just the sub-agent's own slice of it.
-    turn_started_token = None
-    if _turn_started_at.get() is None:
-        turn_started_token = _turn_started_at.set(loop.time())
-    producer = asyncio.create_task(produce())
-    watchdog_task = asyncio.create_task(watchdog())
-    try:
-        while True:
-            item = await queue.get()
-            if item is done:
-                break
-            event_type, data = item
-            if event_type == "__error__":
-                raise data
-            yield event_type, data
-    finally:
-        _status_emitter.reset(token)
-        _job_progress_emitter.reset(job_progress_token)
-        _chart_emitter.reset(chart_token)
-        _variable_choice_emitter.reset(variable_choice_token)
-        _current_thread_id.reset(thread_token)
-        if user_token is not None:
-            _current_user_id.reset(user_token)
-        if call_budget_token is not None:
-            _call_budget.reset(call_budget_token)
-        if mcp_failure_token is not None:
-            _mcp_failure_state.reset(mcp_failure_token)
-        if turn_started_token is not None:
-            _turn_started_at.reset(turn_started_token)
-        if not producer.done():
-            producer.cancel()
-        if not watchdog_task.done():
-            watchdog_task.cancel()

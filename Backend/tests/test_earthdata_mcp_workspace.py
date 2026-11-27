@@ -33,7 +33,7 @@ class WorkspaceBindingTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTestC
         self.addCleanup(self.server.stop)
 
         from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         self.tools = await load_raw_mcp_tools(Settings(earthdata_mcp_url=self.server.url, earthdata_mcp_token=None))
 
@@ -99,7 +99,7 @@ class WorkspaceBindingStageStatusTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.server.stop)
 
         from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         self.tools = await load_raw_mcp_tools(Settings(earthdata_mcp_url=self.server.url, earthdata_mcp_token=None))
 
@@ -167,7 +167,7 @@ class WorkspaceBindingClassifiedErrorTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.server.stop)
 
         from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         self.tools = await load_raw_mcp_tools(Settings(earthdata_mcp_url=self.server.url, earthdata_mcp_token=None))
 
@@ -240,7 +240,7 @@ class WorkspaceMissingUserContextTests(ProcessCacheIsolation, unittest.IsolatedA
         self.addCleanup(self.server.stop)
 
         from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         self.tools = await load_raw_mcp_tools(Settings(earthdata_mcp_url=self.server.url, earthdata_mcp_token=None))
 

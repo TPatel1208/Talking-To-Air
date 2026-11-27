@@ -457,7 +457,7 @@ class CallToolConnectionFailureTests(unittest.IsolatedAsyncioTestCase):
         import asyncio
 
         import tta_backend.earthdata_mcp.results as results_module
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         from tta_backend.earthdata_mcp.results import MCPToolError, call_tool
 
         class _HangingTool:
@@ -487,7 +487,7 @@ class LiveRoundTripProseClassificationTests(unittest.IsolatedAsyncioTestCase):
     async def test_tool_raised_value_error_reaches_parse_tool_result_as_prose(self):
         from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
         from tta_backend.earthdata_mcp.results import MCPToolError, parse_tool_result
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
 
         async def define_area_of_interest(location, workspace_id="default"):

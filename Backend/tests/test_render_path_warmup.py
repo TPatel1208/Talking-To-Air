@@ -13,10 +13,9 @@ Re-measured 2026-08-07, because two of the numbers above had drifted:
   before any request arrives. That is *not* the cost this file is about: the 34
   ``dask.array.*`` modules the render path actually reduces through are still
   imported lazily, and are still the ~0.4 s.
-* PIL is now mostly eager too -- ``plot_tools`` pulls in 19 modules including
-  ``PIL.Image`` at import. Only 8 format plugins arrive lazily, worth ~0.01 s.
-  Kept in the assertion because it is nearly free to warm and it is the half of
-  the render path that would otherwise go unpinned, not because it is expensive.
+* PIL is imported lazily by the overlay renderer. Kept in the assertion
+  because it is cheap to warm and it is the half of the render path that
+  would otherwise go unpinned.
 
 Every assertion here runs in a **subprocess**. ``sys.modules`` is process-wide,
 so an in-process check would pass or fail on whether some earlier test in the
@@ -63,9 +62,11 @@ def _run(*blocks: str) -> list[str]:
 
 COMPARE_HARNESS = """
 import asyncio
-from unittest.mock import AsyncMock, patch
 import xarray as xr
-from tta_backend.tools.satellite_tools import comparison_tools
+from tta_backend.domain.aggregation.aggregation_service import area_weighted_mean
+from tta_backend.domain.analysis.comparison import difference, region_stats
+from tta_backend.domain.charts.colormaps import resolve
+from tta_backend.utils.overlay_render import render_overlay
 
 def make_ds(v):
     return xr.Dataset(
@@ -73,7 +74,7 @@ def make_ds(v):
         coords={"lat": [10.0, 20.0], "lon": [30.0, 40.0]},
     )
 
-async def fake_open(handle, tools):
+async def fake_open(handle):
     # Chunked, i.e. dask-backed, because that is what the real open_handle
     # returns -- it opens bundles lazily so peak memory is bounded by the chunk
     # rather than the granule count. An eager numpy-backed Dataset here would
@@ -84,12 +85,17 @@ async def fake_open(handle, tools):
     return ds.chunk({"lat": 1, "lon": 2})
 
 async def run_one_comparison():
-    compare = comparison_tools.make_compare({})
-    with patch("tta_backend.tools.satellite_tools.plot_tools.emit_chart", lambda p: None), \\
-         patch.object(comparison_tools, "open_handle", AsyncMock(side_effect=fake_open)):
-        return await compare.ainvoke(
-            {"handle_a": "obs_a", "handle_b": "obs_b", "mode": "region"}
-        )
+    # A region comparison as the harness's operations run it: difference the
+    # two opens, reduce it, and render the difference map's overlay.
+    a = (await fake_open("obs_a"))["no2"]
+    b = (await fake_open("obs_b"))["no2"]
+    diff = difference(a, b)
+    float(area_weighted_mean(diff))
+    region_stats(diff)
+    render_overlay(
+        diff["lat"].values, diff["lon"].values, diff.values,
+        resolve("no2", diverging=True).lut, -1.0, 1.0,
+    )
 """
 
 
@@ -99,11 +105,7 @@ async def run_one_comparison():
 )
 class RenderPathWarmupTests(unittest.TestCase):
     # The stack whose first-use imports the warm-up exists to pay for, and the
-    # only one this subprocess can speak to honestly. A real boot imports the
-    # supervisor agent, which drags in 11 langchain_core.tracers submodules; a
-    # comparison here pulls the two or three stragglers, but that costs 9.8 ms
-    # in a booted process (measured) against 15 s to import the agent stack, so
-    # it is neither worth warming nor evidence of anything.
+    # only one this subprocess can speak to honestly.
     RENDER_STACK = ("dask", "PIL")
 
     def test_a_comparison_after_warmup_imports_nothing_from_the_render_stack(self):

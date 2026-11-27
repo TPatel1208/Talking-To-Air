@@ -45,7 +45,7 @@ class RetrievalExtentTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTestCa
         self.server.start()
         self.addCleanup(self.server.stop)
 
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
 
         raw = await load_raw_mcp_tools(
@@ -299,12 +299,8 @@ class RetrievalExtentTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTestCa
         self.assertEqual(caught.exception.category, CATEGORY_USER_INPUT)
 
     async def test_every_aoi_caller_goes_through_the_seam(self):
-        """The two backend composites *and* the agent's own direct call. The
-        third is the majority path -- workflow step 2 makes the AOI step
-        mandatory and first, and no composite edit can intercept it -- so a
-        translation wired into only the composites is the same half-delivery
-        this phase exists to end."""
-        from tta_backend.earthdata_mcp.toolset import curated_model_tools
+        """Every caller reaches the AOI tool through the same workspace-bound
+        dict, so the translation applies to each of them."""
         from tta_backend.services.discovery_service import _resolve_aoi
 
         expected = _parse_bbox(
@@ -315,16 +311,11 @@ class RetrievalExtentTests(ProcessCacheIsolation, unittest.IsolatedAsyncioTestCa
 
         from tta_backend.earthdata_mcp import tool_cache
 
-        curated = {tool.name: tool for tool in curated_model_tools(self.tools)}
-
         callers = (
             # discovery_service._resolve_aoi, which passes location straight through.
             ("discovery_service", lambda: _resolve_aoi("the OTC", self.tools)),
-            # A composite reaching the tool by name off the same dict --
-            # exactly how retrieval_composites.py:508 calls it.
-            ("composite", lambda: self.tools["define_area_of_interest"].ainvoke({"location": "the OTC"})),
-            # The agent's own curated, model-facing tool. The majority path.
-            ("agent", lambda: curated["define_area_of_interest"].ainvoke({"location": "the OTC"})),
+            # A caller reaching the tool by name off the same dict.
+            ("by name", lambda: self.tools["define_area_of_interest"].ainvoke({"location": "the OTC"})),
         )
         for label, call in callers:
             with self.subTest(caller=label):

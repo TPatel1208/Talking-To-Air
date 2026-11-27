@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 
 import { levelResolutionFields } from '../src/utils/metadataDisplay.js'
 
-// Mirrors Backend/preprocessing/level_resolver.py::LevelResolution as it
+// Mirrors Backend/tta_backend/domain/aggregation/level_resolver.py::LevelResolution as it
 // arrives on chart.provenance.level_resolution, with the numbers the Phase 1
 // spike measured on a real TEMPO_O3PROF retrieval over New Jersey.
 function chartWithLevel(overrides = {}) {

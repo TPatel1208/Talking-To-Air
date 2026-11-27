@@ -502,7 +502,7 @@ def _check_extent(request: BufferRequest, geo_result: dict[str, Any], geometry: 
     advice for a buffer, whose only knob is the radius.
     """
     from tta_backend.earthdata_mcp.results import CATEGORY_TOO_LARGE, MCPToolError
-    from tta_backend.preprocessing.frame_stack import MAX_FRAME_NATIVE_CELLS
+    from tta_backend.domain.aggregation.frame_stack import MAX_FRAME_NATIVE_CELLS
     from tta_backend.utils.region_composition import (
         CELLS_PER_SQUARE_DEGREE, MAX_COMPOSITE_ENVELOPE_DEG2,
     )

@@ -21,7 +21,8 @@ import shutil
 import tempfile
 from typing import Any, Iterator
 
-from tta_backend.config.settings import get_settings
+from tta_backend.infrastructure.access_clock import stamp_access
+from tta_backend.infrastructure.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -352,6 +353,8 @@ def write_cube(
         with open(os.path.join(staging, _MANIFEST_NAME), "w", encoding="utf-8") as f:
             json.dump(manifest, f)
         os.rename(staging, final_dir)
+        # A write is an access too, stamped on the same clock as reads.
+        _touch(key)
     except OSError:
         # Environmental, not the data's fault (a full volume, a vanished
         # staging dir). Blacklisting a perfectly cubeable source over a
@@ -618,7 +621,7 @@ def lookup_by_handle(handle: str) -> Any | None:
     Only cubes with a content identity qualify (:func:`is_content_identity`).
     The usual integrity check still runs, via :func:`lookup`.
     """
-    from tta_backend.utils.metrics import record_cache_hit, record_cube_index_hit, record_cube_index_miss
+    from tta_backend.infrastructure.metrics import record_cache_hit, record_cube_index_hit, record_cube_index_miss
 
     if not handle or not get_settings().cube_skip_export_verify:
         return None
@@ -672,7 +675,7 @@ def reconcile_handle(handle: str, key: str) -> None:
     back; ``--workers 1`` and per-workspace handles make that narrow today, and
     ``CUBE_SKIP_EXPORT_VERIFY=0`` is the escape hatch if it ever stops being.
     """
-    from tta_backend.utils.metrics import record_cube_index_invalidation
+    from tta_backend.infrastructure.metrics import record_cube_index_invalidation
 
     if not handle or not key:
         return
@@ -789,13 +792,13 @@ def sweep_store(current_pipeline_version: str) -> None:
     rebuild_index()
 
 
-def _entries() -> list[tuple[float, int, str]]:
+def _entries() -> list[tuple[int, int, str]]:
     """``(last_access, bytes, key)`` for every complete cube in the store.
 
     Sizes come from each manifest's recorded ``total_bytes`` rather than a walk
     — the per-hit sweep already validates that number, so re-deriving it here
     would double the store's I/O on every write for no new information."""
-    out: list[tuple[float, int, str]] = []
+    out: list[tuple[int, int, str]] = []
     try:
         scanned = list(os.scandir(_store_root()))
     except OSError:
@@ -807,7 +810,7 @@ def _entries() -> list[tuple[float, int, str]]:
         if manifest is None:
             continue
         try:
-            last_access = entry.stat(follow_symlinks=False).st_mtime
+            last_access = entry.stat(follow_symlinks=False).st_mtime_ns
         except OSError:
             continue
         out.append((last_access, int(manifest.get("total_bytes") or 0), entry.name))
@@ -830,7 +833,7 @@ def evict_to_fit(incoming_bytes: int) -> int:
     be evicted at one hour, and its sweep only fires on new extractions, so a
     cache that stops growing never prunes at all.
     """
-    from tta_backend.utils.metrics import record_cube_eviction
+    from tta_backend.infrastructure.metrics import record_cube_eviction
 
     limit = get_settings().cube_store_max_bytes
     entries = sorted(_entries())  # oldest access first
@@ -855,7 +858,7 @@ def _touch(key: str) -> None:
     cache's own pruner learned this the hard way: reads that don't touch mtime
     make a hot entry indistinguishable from an abandoned one."""
     try:
-        os.utime(_entry_dir(key), None)
+        stamp_access(_entry_dir(key))
     except OSError:
         pass
 

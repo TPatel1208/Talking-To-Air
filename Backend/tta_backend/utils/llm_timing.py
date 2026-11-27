@@ -30,7 +30,7 @@ if TYPE_CHECKING:
     from langchain_core.outputs import LLMResult
     from tenacity import RetryCallState
 
-from tta_backend.utils.phase_timing import record_phase
+from tta_backend.infrastructure.phase_timing import record_phase
 
 # A run whose end callback never arrives (a turn cancelled by the
 # whole-turn deadline is the realistic case) would otherwise pin its entry
@@ -139,7 +139,7 @@ def _record_token_counters(model: str, agent_type: str, context: dict[str, Any])
     the hot path, and a telemetry failure must not be why a turn fails.
     """
     try:
-        from tta_backend.utils.metrics import record_llm_tokens
+        from tta_backend.infrastructure.metrics import record_llm_tokens
 
         for context_key, kind in _TOKEN_KINDS:
             tokens = context.get(context_key)

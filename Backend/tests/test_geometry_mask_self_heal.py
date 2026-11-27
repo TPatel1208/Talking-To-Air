@@ -33,7 +33,7 @@ class GeometryMaskSelfHealTests(unittest.TestCase):
 
     def test_subcell_polygon_self_heals_to_boundary_cells(self):
         from shapely.geometry import box
-        from tta_backend.utils.plotting import geometry_mask
+        from tta_backend.domain.masking.geometry import geometry_mask
 
         da = self._coarse_grid()
         # A 2° box near (3,3): covers no cell center, but overlaps the cell
@@ -47,7 +47,7 @@ class GeometryMaskSelfHealTests(unittest.TestCase):
 
     def test_off_grid_polygon_stays_empty_and_unmarked(self):
         from shapely.geometry import box
-        from tta_backend.utils.plotting import geometry_mask
+        from tta_backend.domain.masking.geometry import geometry_mask
 
         da = self._coarse_grid()
         # Far outside the grid extent: neither pass finds a cell, so the mask
@@ -59,7 +59,7 @@ class GeometryMaskSelfHealTests(unittest.TestCase):
 
     def test_normal_polygon_covering_centers_is_not_marked_boundary_cells(self):
         from shapely.geometry import box
-        from tta_backend.utils.plotting import geometry_mask
+        from tta_backend.domain.masking.geometry import geometry_mask
 
         da = self._coarse_grid()
         # A polygon big enough to contain real cell centers takes the ordinary

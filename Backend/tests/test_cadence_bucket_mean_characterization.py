@@ -153,7 +153,7 @@ def delta_pct(f, m, where):
     """``sum(w|F-M|) / sum(w|M|)`` as a percentage over the selected cells."""
     import numpy as np
 
-    from tta_backend.preprocessing.aggregation_service import cos_lat_weights
+    from tta_backend.domain.aggregation.aggregation_service import cos_lat_weights
 
     weights = cos_lat_weights(m)
     mask = np.isfinite(f) & np.isfinite(m) & where
@@ -267,7 +267,7 @@ class CadenceBucketPopulationSplitTests(unittest.TestCase):
     def setUp(self):
         import numpy as np
 
-        from tta_backend.preprocessing.aggregation_service import AggregationService
+        from tta_backend.domain.aggregation.aggregation_service import AggregationService
 
         self.np = np
         self.svc = AggregationService()
@@ -489,7 +489,7 @@ class TemporalMeanProductionPathTests(unittest.TestCase):
         import numpy as np
         import xarray as xr
 
-        from tta_backend.preprocessing.aggregation_service import AggregationService
+        from tta_backend.domain.aggregation.aggregation_service import AggregationService
 
         self.np, self.xr = np, xr
         self.svc = AggregationService()

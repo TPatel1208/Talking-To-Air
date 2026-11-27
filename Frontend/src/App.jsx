@@ -5,11 +5,13 @@ import SessionSidebar from './components/SessionSidebar'
 import { useChat } from './hooks/useChat'
 import { useDiscovery } from './hooks/useDiscovery'
 import { useJobs } from './hooks/useJobs'
+import { useRuns } from './hooks/useRuns'
 import { createEmptySelection, toggleSlot } from './utils/compareMode'
 import { authTransition } from './utils/sessionExpiry'
 import { turnCompletionFocus } from './utils/turnFocus'
 import { ensureSupabaseClient, getSupabaseClient } from './utils/supabaseClient'
 import { configureApiFetch, noteSession } from './utils/apiFetch'
+import { continueRequest } from './utils/pausedRuns'
 import {
   authReducer,
   authView,
@@ -249,6 +251,7 @@ function AuthenticatedApp({ user, onLogout }) {
     hasMoreSessions,
     loadMoreSessions,
     turnStatus,
+    turnsDone,
     sendMessage,
     newSession,
     switchSession,
@@ -259,6 +262,22 @@ function AuthenticatedApp({ user, onLogout }) {
     detach,
     clearError,
   } = useChat(applyJobProgress)
+
+  const { runs, error: runsError, fetchRuns, cancelRun } = useRuns(threadId, turnsDone)
+
+  // A paused run's Continue goes through the normal chat stream, so its
+  // progress shows as for any turn; an answer from the panel the same way.
+  const handleContinueRun = useCallback((run) => {
+    const { message, resume } = continueRequest(run)
+    sendMessage(message, { resume })
+  }, [sendMessage])
+  const handleAnswerRun = useCallback((request) => {
+    return sendMessage(request.message, { answer: request.answer })
+  }, [sendMessage])
+  const handleRefreshJobs = useCallback(() => {
+    fetchJobs()
+    fetchRuns()
+  }, [fetchJobs, fetchRuns])
 
   const discovery = useDiscovery()
   // Declared before handleRetrieve, which opens the Jobs tab.
@@ -328,6 +347,12 @@ function AuthenticatedApp({ user, onLogout }) {
   const rightPanelCollapsed = rightPanelTab === null
   const toggleSessionsCollapsed = useCallback(() => setSessionsCollapsed(v => !v), [])
   const toggleChatCollapsed = useCallback(() => setChatCollapsed(v => !v), [])
+  // A request from the chat to show a connector's card in the sidebar.
+  const [connectorsRequest, setConnectorsRequest] = useState(null)
+  const openConnectors = useCallback((connectorType) => {
+    setSessionsCollapsed(false)
+    setConnectorsRequest(prev => ({ connectorType, nonce: (prev?.nonce || 0) + 1 }))
+  }, [])
   const toggleRightPanelCollapsed = useCallback(() => setRightPanelTab(tab => tab ? null : 'discover'), [])
 
   const resetCompare = useCallback(() => {
@@ -427,6 +452,7 @@ function AuthenticatedApp({ user, onLogout }) {
         user={user}
         artifacts={artifacts}
         collapsed={sessionsCollapsed}
+        connectorsRequest={connectorsRequest}
         onCollapse={toggleSessionsCollapsed}
         onExpand={toggleSessionsCollapsed}
       />
@@ -452,6 +478,7 @@ function AuthenticatedApp({ user, onLogout }) {
             compareSelection={compareSelection}
             onToggleCompareSlot={toggleCompareSlot}
             onCollapse={toggleChatCollapsed}
+            onOpenConnectors={openConnectors}
           />
         </div>
       )}
@@ -486,9 +513,15 @@ function AuthenticatedApp({ user, onLogout }) {
           jobs={jobs}
           jobsError={jobsError}
           onCancelJob={cancelJob}
-          onRefreshJobs={fetchJobs}
+          onRefreshJobs={handleRefreshJobs}
           onRetrieve={handleRetrieve}
           onViewResult={handleViewResult}
+          runs={runs}
+          runsError={runsError}
+          busy={loading}
+          onCancelRun={cancelRun}
+          onContinueRun={handleContinueRun}
+          onAnswerRun={handleAnswerRun}
         />
       )}
     </div>

@@ -20,15 +20,43 @@ from __future__ import annotations
 import math
 import pathlib
 import logging
+import re
+from datetime import date
 from functools import lru_cache
 from typing import Any, Literal, Optional
 
 import yaml
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from tta_backend.datasets.cadence import Cadence
 
 logger = logging.getLogger(__name__)
 
 _REGISTRY_PATH = pathlib.Path(__file__).parent / "collections.yaml"
+
+_QUANTITY_PATTERN = re.compile(r"^[a-z][a-z0-9]*(_[a-z0-9]+)*$")
+
+
+class CoverageBox(BaseModel):
+    """A regional product's spatial coverage, in degrees (lon -180..180, lat -90..90).
+
+    west < east and south < north: a box never crosses the antimeridian. A
+    product that covers the whole globe uses ``coverage: global`` instead."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    west:  float = Field(ge=-180, le=180)
+    south: float = Field(ge=-90, le=90)
+    east:  float = Field(ge=-180, le=180)
+    north: float = Field(ge=-90, le=90)
+
+    @model_validator(mode="after")
+    def _ordered(self) -> "CoverageBox":
+        if self.west >= self.east:
+            raise ValueError(f"coverage west ({self.west}) must be < east ({self.east})")
+        if self.south >= self.north:
+            raise ValueError(f"coverage south ({self.south}) must be < north ({self.north})")
+        return self
 
 
 class CollectionConfig(BaseModel):
@@ -37,7 +65,9 @@ class CollectionConfig(BaseModel):
     short_name:    str = ""
     version:       str = ""
     description:   str = ""
-    cadence:       Literal["hourly", "daily", "monthly"] = "daily"
+    # seasonal and annual granules are one mean over a calendar period; see
+    # datasets/cadence.py for how seasons are bounded and named.
+    cadence:       Cadence = "daily"
     # ── Provenance display ──────────────────────────────────────────────────
     # Free-text, not parsed by any masking/aggregation logic -- surfaced as
     # "<provider> — <instrument>" in the Metadata tab's Source dataset block.
@@ -84,6 +114,60 @@ class CollectionConfig(BaseModel):
     fill_value: float
     valid_min:  float
     valid_max:  float
+
+    # ── Product choice ────────────────────────────────────────────────────
+    # Facts the harness product resolver uses to choose a product for a
+    # quantity. All optional: an entry without quantity and coverage can still
+    # be used when a user names it, a workflow approves it or a run pins it,
+    # but never chosen from registry facts alone.
+    #
+    # quantity: the canonical quantity the product measures, lower_snake,
+    #   e.g. "no2_tropospheric_column". Entries measuring the same thing share
+    #   the same string exactly.
+    quantity:     Optional[str] = None
+    # coverage: "global", or a {west, south, east, north} box in degrees.
+    #   A request is served only when its whole area lies inside.
+    coverage:     Literal["global"] | CoverageBox | None = None
+    # record_start / record_end: first and last day (UTC) with data.
+    #   record_end null means the record is ongoing.
+    record_start: Optional[date] = None
+    record_end:   Optional[date] = None
+    # stream: "standard" (final processing) or "near_real_time" (rapid
+    #   processing, published sooner).
+    stream:       Optional[Literal["standard", "near_real_time"]] = None
+    # latency_days: whole days from observation to publication. The newest
+    #   day treated as published is today minus this (0 = today's data is
+    #   already appearing, 1 = yesterday is complete). For a seasonal or
+    #   annual product, whole days from the end of the period, since one
+    #   file holds the whole period.
+    latency_days: Optional[int] = Field(default=None, ge=0)
+    # retention_days: whole days of recent data a rolling archive keeps. The
+    #   oldest day still held is today minus this. Null means everything
+    #   since record_start is kept.
+    retention_days: Optional[int] = Field(default=None, ge=1)
+    # rank: order among entries with the same quantity when no workflow list
+    #   decides; 1 is preferred over 2. Unranked entries come after ranked.
+    rank:         Optional[int] = Field(default=None, ge=1)
+
+    @field_validator("quantity")
+    @classmethod
+    def _quantity_is_lower_snake(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and not _QUANTITY_PATTERN.match(v):
+            raise ValueError(f"quantity {v!r} must be lower_snake, e.g. 'no2_tropospheric_column'")
+        return v
+
+    @model_validator(mode="after")
+    def _record_dates_ordered(self) -> "CollectionConfig":
+        if (
+            self.record_start is not None
+            and self.record_end is not None
+            and self.record_end < self.record_start
+        ):
+            raise ValueError(
+                f"record_end ({self.record_end}) must be on or after "
+                f"record_start ({self.record_start})"
+            )
+        return self
 
     @field_validator("fill_value", "valid_min", "valid_max", mode="before")
     @classmethod
@@ -193,6 +277,22 @@ COLLECTIONS_WITHOUT_QUALITY_FLAG: dict[str, str] = {
         "HAQ_TROPOMI_NO2_GLOBAL_M_L3, a MONTHLY global composite -- not the S5P_L2 swath, "
         "whose continuous 0-1 `qa_value` the enumerated doctrine could not express anyway. "
         "Being monthly-only is its real limitation for air-quality work, not the masking"
+    ),
+    "TROPOMI_NO2_ANNUAL": (
+        "CMR-checked 2026-11-20, not granule-verified: HAQ_TROPOMI_NO2_GLOBAL_A_L3, the annual "
+        "cut of the same HAQAST family as TROPOMI_NO2, lists Tropospheric_NO2, Number_obs, "
+        "Latitude and Longitude and no flag band. Its file names say QA75: pixels with "
+        "qa_value of 0.75 or more were averaged before gridding, so screening happened upstream"
+    ),
+    "TROPOMI_NO2_CONUS_ANNUAL": (
+        "CMR-checked 2026-11-20, not granule-verified: HAQ_TROPOMI_NO2_CONUS_A_L3, the 0.01-degree "
+        "CONUS annual cut of the TROPOMI_NO2 family, lists the same four variables and no flag "
+        "band. QA75 file names: pixels with qa_value of 0.75 or more were averaged before gridding"
+    ),
+    "TROPOMI_NO2_CONUS_SEASONAL": (
+        "CMR-checked 2026-11-20, not granule-verified: HAQ_TROPOMI_NO2_CONUS_S_L3, the 0.01-degree "
+        "CONUS seasonal cut of the TROPOMI_NO2 family, lists the same four variables and no flag "
+        "band. QA75 file names: pixels with qa_value of 0.75 or more were averaged before gridding"
     ),
     "VIIRS_AOD_SNPP": (
         "inventory-verified (describe_dataset, 2026-08-02): 13 bands, none a flag. Same "

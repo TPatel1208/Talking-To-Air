@@ -94,7 +94,7 @@ test('the toggle names the same statistics, in the same order, as the backend te
   // researcher reading the answer beside the toggle is looking at both. A
   // comment naming the other file is not a check: Phase 8 measured that
   // exact arrangement drifting with every test in both suites green.
-  const path = fileURLToPath(new URL('../../Backend/tta_backend/preprocessing/frame_stack.py', import.meta.url))
+  const path = fileURLToPath(new URL('../../Backend/tta_backend/domain/aggregation/frame_stack.py', import.meta.url))
   const source = readFileSync(path, 'utf-8')
   const match = source.match(/PLANE_STATISTICS\s*=\s*\(([^)]*)\)/)
 

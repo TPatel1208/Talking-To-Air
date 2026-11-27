@@ -69,18 +69,18 @@ Copy `.env.example` to `.env` and fill in the values below — it's the exhausti
 | `DB_PASSWORD` | PostgreSQL password (any string you choose) |
 | `SUPABASE_URL` | Supabase project URL — the identity provider. Access tokens are verified locally against its published JWKS |
 | `SUPABASE_PUBLISHABLE_KEY` | Supabase publishable (anon) key. Served to the browser at runtime by `GET /config/auth` |
-| `GOOGLE_API_KEY` | Google AI Studio key — every agent defaults to the `google` provider |
+| `GOOGLE_API_KEY` | Google AI Studio key — every model defaults to the `google` provider |
 | `EARTHDATA_USERNAME` / `EARTHDATA_PASSWORD` | NASA Earthdata credentials |
-| `AQS_API_EMAIL` / `AQS_API_KEY` | EPA AQS credentials. `AQS_API_EMAIL` also becomes the contact address in the Nominatim geocoder's User-Agent, so it must be a **real** email — Nominatim rejects placeholder `@example.com`/`.org`/`.net` addresses, and location lookups (ground *and* satellite) fail without it |
+| `NOMINATIM_CONTACT_EMAIL` | The contact address in the Nominatim geocoder's User-Agent, so it must be a **real** email — Nominatim rejects placeholder `@example.com`/`.org`/`.net` addresses, and location lookups (ground *and* satellite) fail without it. Read from `AQS_API_EMAIL` when unset. EPA AQS data itself uses each user's own key, connected in Settings → Connectors; there is no shared EPA credential |
 | `EARTHDATA_MCP_URL` / `EARTHDATA_MCP_TOKEN` | Endpoint and bearer token of the MCP stack (satellite path only) |
 
-The backend refuses to boot without `DB_PASSWORD`, `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, and `GOOGLE_API_KEY`. Earthdata/AQS/MCP values aren't checked at boot but are required for the corresponding features to work.
+The backend refuses to boot without `DB_PASSWORD`, `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, and `GOOGLE_API_KEY`. Earthdata/MCP values aren't checked at boot but are required for the corresponding features to work.
 
 ### Worth knowing about
 
 | Variable | Default | Description |
 |---|---|---|
-| Per-agent provider/model | all `google` | Supervisor: `SUPERVISOR_MODEL_PROVIDER`/`LLM_MODEL` (default `gemini-3.7-flash`). Satellite: `EARTHDATA_AGENT_PROVIDER`/`EARTHDATA_AGENT_MODEL`. Ground: `GROUND_AGENT_PROVIDER`/`GROUND_AGENT_MODEL` (both default `gemini-3.5-flash-lite`). Set a provider to `groq` to route that agent through Groq instead — then `GROQ_API_KEY` becomes required too — or to `portkey` to route it through the Portkey gateway, with a `@provider-slug/model` id as the model and `PORTKEY_API_KEY` required (see `.env.example`). |
+| Model provider/model | all `google` | Supervisor and exploration: `SUPERVISOR_MODEL_PROVIDER`/`LLM_MODEL` (default `gemini-3.7-flash`). A workflow's agent steps: `EARTHDATA_AGENT_PROVIDER`/`EARTHDATA_AGENT_MODEL` (default `gemini-3.5-flash-lite`). Set a provider to `groq` to route that model through Groq instead — then `GROQ_API_KEY` becomes required too — or to `portkey` to route it through the Portkey gateway, with a `@provider-slug/model` id as the model and `PORTKEY_API_KEY` required (see `.env.example`). |
 | `RETRIEVAL_SOFT_CAP_BYTES` / `RETRIEVAL_HARD_CAP_BYTES` | 2 GiB / 10 GiB | A retrieval estimated at/below the soft cap proceeds automatically; above it (up to the hard cap) it pauses for in-chat confirmation; above the hard cap it's refused with guidance to narrow the request. |
 | `LOG_LEVEL` / `LOG_FORMAT` | `INFO` / `text` | Set `LOG_FORMAT=json` for structured logs suitable for aggregators. |
 | `CONNECTOR_ENCRYPTION_KEY` | — | Fernet key(s) encrypting per-user connector tokens (bring-your-own Earthdata token). Unset: the feature answers a structured 503 instead of blocking boot. |
@@ -108,7 +108,7 @@ Beyond a set of built-in presets (OMI, TROPOMI, TEMPO NO₂/O₃/HCHO), the sate
 
 ## Usage
 
-The empty chat screen shows six starter prompts pulled live from the backend (`config/starter_prompts.py`) — each is tied to a real eval task, so these are the questions most likely to work end-to-end:
+The empty chat screen shows six starter prompts pulled live from the backend (`config/starter_prompts.py`) — each is tied to a benchmark case, so these are the questions most likely to work end-to-end:
 
 ```
 What NASA datasets are available for NO2 column density over New Jersey?
@@ -136,7 +136,7 @@ docker compose --profile test run --build --rm frontend-test   # frontend tests
 
 Run a subset while iterating:
 ```bash
-docker compose --profile test run --build --rm backend-test sh -c "pytest tests/test_subagent_dispatch.py -q"
+docker compose --profile test run --build --rm backend-test sh -c "pytest tests/test_harness_supervisor.py -q"
 ```
 
 **Python dependencies** are managed with [uv](https://docs.astral.sh/uv/). `Backend/pyproject.toml` declares them (runtime under `dependencies`, test and lint tools in the `dev` group) and `Backend/uv.lock` pins every package, direct and indirect, for every platform. The Docker image, CI and your editor's environment all install from that lock:

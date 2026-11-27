@@ -1,20 +1,5 @@
 import { useEffect, useState } from 'react'
-import { cleanStatusMessage } from '../utils/workflowStage'
-
-const STAGE_LABELS = {
-  search: 'Searching',
-  aoi: 'Resolving area',
-  coverage: 'Checking coverage',
-  estimate: 'Estimating size',
-  submit: 'Submitting retrieval',
-  progress: 'Retrieving data',
-  open: 'Opening data',
-  render: 'Rendering',
-  working: 'Still working',
-  queued: 'Waiting for a free slot',
-  running: 'Running',
-  finished: 'Done',
-}
+import { cleanStatusMessage, runRowView, stageLabel } from '../utils/workflowStage'
 
 const DOT = {
   width: '5px', height: '5px', borderRadius: '50%',
@@ -34,7 +19,7 @@ function LaneRows({ lanes, elapsedSeconds }) {
             : <span style={DOT} />}
           <span style={{ fontWeight: 600, color: 'var(--text-secondary)' }}>{row.label}</span>
           <span style={{ opacity: row.done ? 0.6 : 1 }}>
-            {row.message || (row.stage ? STAGE_LABELS[row.stage] || row.stage : '')}
+            {row.message || (row.stage ? stageLabel(row.stage) || row.stage : '')}
           </span>
           {row.detail != null && !row.done && <span style={{ opacity: 0.75 }}>{String(row.detail)}</span>}
           {index === 0 && elapsedSeconds != null && (
@@ -42,6 +27,31 @@ function LaneRows({ lanes, elapsedSeconds }) {
           )}
         </div>
       ))}
+    </div>
+  )
+}
+
+/* One row per workflow run or exploration task. */
+function RunRows({ runs, elapsedSeconds }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', fontSize: '12px', lineHeight: 1.4 }}>
+      {runs.map((row, index) => {
+        const { title, position, activity, current } = runRowView(row)
+        return (
+          <div key={row.runId} style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-muted)' }}>
+            {row.done
+              ? <span style={{ width: '5px', flexShrink: 0, color: 'var(--teal)', fontSize: '10px' }}>✓</span>
+              : <span style={DOT} />}
+            <span style={{ fontWeight: 600, color: 'var(--text-secondary)' }}>{title}</span>
+            {position && <span style={{ opacity: 0.8 }}>{position}</span>}
+            {activity && <span style={{ opacity: row.done ? 0.6 : 1 }}>{activity}</span>}
+            {current && !row.done && <span style={{ opacity: 0.75 }}>{current}</span>}
+            {index === 0 && elapsedSeconds != null && (
+              <span style={{ opacity: 0.6, marginLeft: 'auto' }}>{formatElapsed(elapsedSeconds)}</span>
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }
@@ -67,7 +77,7 @@ export default function WorkflowStrip({ workflowStage, startedAt }) {
   }, [workflowStage?.active])
 
   if (!workflowStage) return null
-  const { stage, label, detail, failedStage, active, lanes } = workflowStage
+  const { stage, label, detail, failedStage, active, lanes, runs } = workflowStage
   if (!active && !failedStage) return null
 
   if (failedStage) {
@@ -78,14 +88,14 @@ export default function WorkflowStrip({ workflowStage, startedAt }) {
       }}>
         <span>
           Failed at: {workflowStage.failedLane ? `${workflowStage.failedLane} · ` : ''}
-          {STAGE_LABELS[failedStage] || failedStage}
+          {stageLabel(failedStage) || failedStage}
         </span>
       </div>
     )
   }
 
   const elapsedSeconds = startedAt != null ? Math.max(0, Math.round((now - startedAt) / 1000)) : null
-  const displayLabel = cleanStatusMessage(label) || (stage ? STAGE_LABELS[stage] || stage : '')
+  const displayLabel = cleanStatusMessage(label) || (stage ? stageLabel(stage) || stage : '')
 
   let displayDetail = null
   if (detail != null && stage !== 'working') {
@@ -97,6 +107,7 @@ export default function WorkflowStrip({ workflowStage, startedAt }) {
     }
   }
 
+  if (runs?.length) return <RunRows runs={runs} elapsedSeconds={elapsedSeconds} />
   if (lanes?.length) return <LaneRows lanes={lanes} elapsedSeconds={elapsedSeconds} />
 
   return (

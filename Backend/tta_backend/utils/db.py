@@ -20,7 +20,7 @@ from psycopg import AsyncConnection
 from psycopg.rows import DictRow, dict_row
 from psycopg_pool import AsyncConnectionPool
 
-from tta_backend.config.settings import get_settings
+from tta_backend.infrastructure.settings import get_settings
 
 logger = logging.getLogger(__name__)
 

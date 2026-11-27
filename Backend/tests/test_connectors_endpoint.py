@@ -74,7 +74,7 @@ class ConnectorsEndpointTests(unittest.IsolatedAsyncioTestCase):
         import httpx
         import tta_backend.api as api
         from cryptography.fernet import Fernet
-        from tta_backend.utils.connector_crypto import build_multi_fernet
+        from tta_backend.infrastructure.connector_crypto import build_multi_fernet
 
         self.httpx = httpx
         self.api = api
@@ -261,7 +261,7 @@ class ConnectorsEndpointTests(unittest.IsolatedAsyncioTestCase):
     async def test_set_aqs_credentials_stores_the_pair_encrypted_with_no_expiry(self):
         import json
 
-        from tta_backend.utils.connector_crypto import decrypt_secret
+        from tta_backend.infrastructure.connector_crypto import decrypt_secret
 
         patches = self._auth_patches() + self._repo_patches() + self._validator_patch()
         async with await self._client(patches) as client:
@@ -290,7 +290,7 @@ class ConnectorsEndpointTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(self.store.secrets[("user-1", "epa_aqs")], res.text)
 
     async def test_a_pair_epa_rejects_is_a_422_and_nothing_is_stored(self):
-        from tta_backend.tools.ground_sensor_tools.epa_aqs_tools import AqsCredentialsRejected
+        from tta_backend.domain.monitors.aqs import AqsCredentialsRejected
 
         patches = self._auth_patches() + self._repo_patches() + self._validator_patch(AqsCredentialsRejected("no"))
         async with await self._client(patches) as client:
@@ -301,7 +301,7 @@ class ConnectorsEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(("user-1", "epa_aqs"), self.store.rows)
 
     async def test_epa_being_unreachable_is_a_502_and_nothing_is_stored(self):
-        from tta_backend.tools.ground_sensor_tools.epa_aqs_tools import AqsUnavailable
+        from tta_backend.domain.monitors.aqs import AqsUnavailable
 
         patches = self._auth_patches() + self._repo_patches() + self._validator_patch(AqsUnavailable("down"))
         async with await self._client(patches) as client:

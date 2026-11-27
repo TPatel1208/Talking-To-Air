@@ -132,7 +132,7 @@ CELLS_PER_SQUARE_DEGREE = (2950 * 5771) / (59.0 * 155.0)
 
 
 def _envelope_ceiling_deg2() -> float:
-    from tta_backend.preprocessing.frame_stack import MAX_FRAME_NATIVE_CELLS
+    from tta_backend.domain.aggregation.frame_stack import MAX_FRAME_NATIVE_CELLS
 
     return MAX_FRAME_NATIVE_CELLS / CELLS_PER_SQUARE_DEGREE
 
@@ -378,7 +378,7 @@ def _too_large(raw_name: str, bounds: tuple[float, float, float, float]) -> "MCP
     fired -- a message quoting a number nothing compared against is how a
     refusal ends up misleading the person reading it."""
     from tta_backend.earthdata_mcp.results import CATEGORY_TOO_LARGE, MCPToolError
-    from tta_backend.preprocessing.frame_stack import MAX_FRAME_NATIVE_CELLS
+    from tta_backend.domain.aggregation.frame_stack import MAX_FRAME_NATIVE_CELLS
 
     deg2 = (bounds[2] - bounds[0]) * (bounds[3] - bounds[1])
     return MCPToolError(
@@ -413,7 +413,7 @@ def _member_too_large(token: str, name: str, bounds: tuple[float, float, float, 
     U.S. state does: Alaska, the worst, is 954 deg^2 against a 2,148.7 ceiling.
     """
     from tta_backend.earthdata_mcp.results import CATEGORY_TOO_LARGE, MCPToolError
-    from tta_backend.preprocessing.frame_stack import MAX_FRAME_NATIVE_CELLS
+    from tta_backend.domain.aggregation.frame_stack import MAX_FRAME_NATIVE_CELLS
 
     west, south, east, north = bounds
     deg2 = (east - west) * (north - south)

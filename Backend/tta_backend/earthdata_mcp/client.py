@@ -5,9 +5,6 @@ Async client for the earthdata-retrieval MCP: connects over streamable HTTP
 (bearer token from settings), loads every tool the MCP exposes, and
 fails loud if the MCP is unreachable or missing a tool this backend depends
 on — a broken data layer should be discovered at boot, not mid-conversation.
-
-The curated, model-facing subset is assembled separately in
-earthdata_mcp.toolset; this module only deals with the raw connection.
 """
 from __future__ import annotations
 
@@ -19,7 +16,7 @@ from langchain_core.tools import BaseTool
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_mcp_adapters.tools import load_mcp_tools
 
-from tta_backend.config.settings import Settings
+from tta_backend.infrastructure.settings import Settings
 
 
 @dataclass
@@ -39,9 +36,7 @@ class HeldSession:
     tools: dict[str, BaseTool]
     probe: Callable[[], Awaitable[Any]] | None = None
 
-# Model-facing curated surface (kept minimal): discovery, AOI, coverage. Retrieval, citation, and provenance
-# are demoted to internal-only — the model reaches them only through the
-# safe_retrieve/await_retrieval composites and the backend endpoints.
+# Discovery, AOI and coverage tools.
 CURATED_TOOL_NAMES = (
     "search_datasets",
     "describe_dataset",
@@ -50,9 +45,7 @@ CURATED_TOOL_NAMES = (
     "check_availability",
     "check_coverage",
 )
-# Used internally by the await_retrieval/safe_retrieve/open_handle/jobs/
-# compare composites, or by backend endpoints directly; never exposed to
-# the model as standalone tools.
+# Retrieval, citation and provenance tools.
 INTERNAL_TOOL_NAMES = (
     "retrieve_subset",
     "estimate_retrieval_size",
@@ -89,7 +82,7 @@ REQUIRED_TOOL_NAMES = CURATED_TOOL_NAMES + INTERNAL_TOOL_NAMES
 # from the composites/tool factories that call it directly — see
 # services/discovery_service.py, services/jobs_service.py,
 # services/provenance_service.py, services/retrieval_composites.py,
-# services/data_download_service.py, tools/satellite_tools/comparison_tools.py
+# services/data_download_service.py and the harness's satellite source
 # — plus workspace_id, which earthdata_mcp/workspace.py injects into every
 # call). A tool with no direct call site here (e.g. check_availability) only
 # requires workspace_id. The connect-time schema check (earthdata_mcp/
@@ -113,8 +106,7 @@ REQUIRED_TOOL_PARAMS: dict[str, tuple[str, ...]] = {
     "align": ("source_handles", "workspace_id"),
     "convert_format": ("source_handle", "output_format", "workspace_id"),
     "get_retrieval_status": ("job_handle", "workspace_id"),
-    # services/retrieval_composites.py::point_timeseries's direct call
-    # site — never output_format, this composite is always point-sampled.
+    # Never output_format: a point series is always point-sampled.
     "retrieve_timeseries": (
         "dataset_handle", "aoi_handle", "time_range", "variables", "point_sample", "workspace_id",
     ),

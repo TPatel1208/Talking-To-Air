@@ -174,3 +174,40 @@ test('a profile CSV never labels a pressure as a time', () => {
   assert.equal('time' in row, false)
   assert.equal(row.pressure, 900)
 })
+
+const HARNESS = { run_id: 'run_' + 'a'.repeat(32), mode: { kind: 'exploratory' }, handle: 'obs_1' }
+
+test('a harness heatmap is not offered a server CSV the backend refuses', () => {
+  const chart = {
+    type: 'heatmap', chart_id: 'h1', export: { type: 'heatmap' },
+    metadata: { source_handles: ['obs_1'], harness: HARNESS }, lats: [1], lons: [2], values: [[3]],
+  }
+  const resolved = resolveCsvExport(chart)
+  assert.equal(resolved.kind, 'unavailable')
+  assert.match(resolved.message, /no CSV export/)
+  assert.match(resolved.message, new RegExp(`/result/${HARNESS.run_id}/export.zip`))
+  // The live frame names the run at the top level instead.
+  const live = { ...chart, metadata: { source_handles: ['obs_1'] }, run_id: HARNESS.run_id }
+  assert.equal(resolveCsvExport(live).kind, 'unavailable')
+})
+
+test('a harness time series and profile keep their server CSV', () => {
+  for (const type of ['timeseries', 'profile']) {
+    const chart = { type, chart_id: 't1', export: { type }, metadata: { harness: HARNESS } }
+    assert.deepEqual(resolveCsvExport(chart), { kind: 'server', url: '/api/chart/t1/export.csv' })
+  }
+})
+
+test('a harness chart drawn from a derived handle is not offered NetCDF; one from a retrieval is', () => {
+  const derived = 'series_' + '1'.repeat(32)
+  const fromDerived = { type: 'timeseries', chart_id: 'c1', metadata: { source_handles: [derived], harness: HARNESS } }
+  const refused = resolveNetcdfExport(fromDerived)
+  assert.equal(refused.kind, 'unavailable')
+  assert.match(refused.message, /derived/)
+
+  const fromRetrieval = { type: 'heatmap', chart_id: 'c2', metadata: { source_handles: ['obs_1'], harness: HARNESS } }
+  assert.deepEqual(resolveNetcdfExport(fromRetrieval), { kind: 'server', url: '/api/chart/c2/export.nc' })
+  // A chart no harness run drew is unchanged, whatever its handle looks like.
+  const plain = { type: 'heatmap', chart_id: 'c3', metadata: { source_handles: [derived] } }
+  assert.equal(resolveNetcdfExport(plain).kind, 'server')
+})

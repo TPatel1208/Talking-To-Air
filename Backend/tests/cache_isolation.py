@@ -82,7 +82,7 @@ def _isolate_store(env_var: str, prefix: str) -> str:
     # ``conftest.py``, and at conftest import time the application packages are
     # not necessarily importable yet.
     try:
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
 
         get_settings.cache_clear()
     except Exception:  # noqa: BLE001 — isolation must not gate collection
@@ -105,7 +105,7 @@ def _deployment_dir(env_var: str, attr: str) -> str:
     """
     import unittest.mock
 
-    from tta_backend.config.settings import Settings
+    from tta_backend.infrastructure.settings import Settings
 
     with unittest.mock.patch.dict(os.environ):
         os.environ.pop(env_var, None)
@@ -189,7 +189,7 @@ def isolate_cube_store() -> str:
     # ``conftest.py``, and at conftest import time the application packages are
     # not necessarily importable yet.
     try:
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
 
         get_settings.cache_clear()
     except Exception:  # noqa: BLE001 — isolation must not gate collection
@@ -212,7 +212,7 @@ def deployment_cube_store_dir() -> str:
     """
     import unittest.mock
 
-    from tta_backend.config.settings import Settings
+    from tta_backend.infrastructure.settings import Settings
 
     with unittest.mock.patch.dict(os.environ):
         os.environ.pop(CUBE_STORE_ENV, None)

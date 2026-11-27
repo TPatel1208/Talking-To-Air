@@ -25,7 +25,7 @@ class OverlayStoreTestCase(unittest.TestCase):
     """Points the overlay store at a throwaway directory for each test."""
 
     def setUp(self):
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
 
         self._store = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(self._store.cleanup)
@@ -35,7 +35,7 @@ class OverlayStoreTestCase(unittest.TestCase):
         self.addCleanup(get_settings.cache_clear)
 
     def set_env(self, **env):
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
 
         patcher = unittest.mock.patch.dict(
             os.environ, {k: str(v) for k, v in env.items()}
@@ -144,11 +144,26 @@ class EvictionTests(OverlayStoreTestCase):
         self.assertEqual(read_overlay(warm), png(2))
         self.assertEqual(read_overlay(new), png(3))
 
+    def test_the_overlay_just_read_survives_a_clock_that_never_moves(self):
+        """A coarse file clock gives a read and the write after it the same
+        time; the read must still count as the more recent access."""
+        from tta_backend.services.overlay_store import (
+            read_overlay, store_size_bytes, write_overlay,
+        )
+
+        with unittest.mock.patch("time.time_ns", return_value=1_800_000_000_000_000_000):
+            hot = write_overlay(png(1))
+            self.set_env(OVERLAY_STORE_MAX_BYTES=store_size_bytes() * 2 + 1024)
+            for seed in range(8):
+                self.assertEqual(read_overlay(hot), png(1), seed)
+                write_overlay(png(10 + seed))
+            self.assertEqual(read_overlay(hot), png(1))
+
     def test_the_cap_is_a_fixed_1_gib_and_eviction_holds_the_store_under_it(self):
         """A fixed byte count, never a share of free space, which would expand
         to fill whatever disk the volume is on. Checked through eviction as
         well as the setting, since a cap nothing enforces is only a comment."""
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
         from tta_backend.services.overlay_store import store_size_bytes, write_overlay
 
         self.assertEqual(get_settings().overlay_store_max_bytes, 1024 ** 3)
@@ -173,13 +188,13 @@ class RenderPathTests(OverlayStoreTestCase):
     def render(self, offset: float):
         import numpy as np
 
-        from tta_backend.tools.satellite_tools import plot_tools
+        from tta_backend.services import overlay_store
         from tta_backend.utils.colormaps import resolve
 
         lats = np.linspace(30.0, 33.0, 8)
         lons = np.linspace(-100.0, -96.0, 10)
         values = np.linspace(offset, offset + 1.0, lats.size * lons.size).reshape(lats.size, lons.size)
-        fields = plot_tools._render_and_store_overlay(lats, lons, values, resolve("NO2").lut, 0.0, 2.0)
+        fields = overlay_store.render_and_store(lats, lons, values, resolve("NO2").lut, 0.0, 2.0)
         self.assertIn("_path", fields, "the overlay render failed, so this proves nothing")
         return fields["_path"]
 
@@ -200,13 +215,14 @@ class RenderPathTests(OverlayStoreTestCase):
         import numpy as np
 
         from tta_backend.services.overlay_store import read_overlay
-        from tta_backend.tools.satellite_tools import plot_tools
+        from tta_backend.domain.charts import media
+        from tta_backend.services import overlay_store
         from tta_backend.utils.colormaps import resolve
 
         lats = np.linspace(30.0, 33.0, 8)
         lons = np.linspace(-100.0, -96.0, 10)
         values = np.linspace(0.5, 1.5, lats.size * lons.size).reshape(lats.size, lons.size)
-        fields = plot_tools._render_and_store_overlay(lats, lons, values, resolve("NO2").lut, 0.0, 2.0)
+        fields = overlay_store.render_and_store(lats, lons, values, resolve("NO2").lut, 0.0, 2.0)
 
         self.assertIsNotNone(read_overlay(fields["_values"]["_path"]))
         # The raster holds the reprojected grid, whose bilinear resampling can
@@ -217,8 +233,8 @@ class RenderPathTests(OverlayStoreTestCase):
         payload = {"chart_id": "c1", "type": "heatmap", "overlay": fields}
         # A chart drawn before rasters were stored.
         old_payload = {"chart_id": "c2", "type": "heatmap", "overlay": {"_path": fields["_path"]}}
-        plot_tools._wire_overlay_urls(payload)
-        plot_tools._wire_overlay_urls(old_payload)
+        media.wire_overlay_urls(payload)
+        media.wire_overlay_urls(old_payload)
 
         self.assertTrue(payload["overlay"]["rescalable"])
         self.assertEqual(old_payload["overlay"]["url"], "/chart/c2/overlay.png")

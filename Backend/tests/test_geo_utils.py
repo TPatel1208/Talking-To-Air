@@ -3,8 +3,8 @@ import unittest
 
 import xarray as xr
 
-from tta_backend.utils.geo_utils import find_lat_coord, find_lon_coord
-from tta_backend.utils.geo_utils import identify_lat, identify_lon, identify_time
+from tta_backend.domain.geo import find_lat_coord, find_lon_coord
+from tta_backend.domain.geo import identify_lat, identify_lon, identify_time
 
 
 class IdentifyLatLonTests(unittest.TestCase):

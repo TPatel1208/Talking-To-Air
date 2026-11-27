@@ -1,7 +1,9 @@
 import { useMemo, useState, useEffect, useRef } from 'react'
+import { asSmokeMap } from '../utils/hmsMap.js'
 import { TimeSeriesPanel, ProfilePanel, ChartToolbar } from './ChartMessage'
 import MapLibreHeatmapPanel from './MapLibreHeatmapPanel.jsx'
 import MapLibreSmokePanel from './MapLibreSmokePanel.jsx'
+import MapLibrePolygonPanel from './MapLibrePolygonPanel.jsx'
 import HeatmapMultiPanel from './HeatmapMultiPanel.jsx'
 import CompareGrid from './CompareGrid.jsx'
 import ArtifactMessage, { TableArtifactMessage } from './ArtifactMessage'
@@ -20,6 +22,8 @@ import {
 import { selectFrame } from '../utils/frameStack.js'
 import { PANEL_MIN_WIDTH, PANEL_HEADER_HEIGHT } from '../utils/panelLayout.js'
 import { MetadataOverview } from './MetadataOverview.jsx'
+import ModeBadge from './ModeBadge'
+import { modeBadge } from '../utils/resultMode.js'
 import { MetaField } from './metadataPrimitives.jsx'
 import { smallButtonStyle, copyToClipboard } from '../utils/metadataUiHelpers.js'
 import { resolveMasking, resolveRegionFidelity, formatQaPassRate, regionTypeNote, regionOriginNote } from '../utils/maskingProvenance'
@@ -575,6 +579,7 @@ function TableMetadataOverview({ artifact, page, status }) {
   const loadingOr = (value) => (status === 'loading' ? '…' : fmt(value))
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+      <ModeBadge badge={modeBadge(artifact?.mode)} />
       <div>
         <div style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '8px' }}>
           This table
@@ -771,6 +776,8 @@ function MetadataTab({ chart, artifact, onViewStatistics }) {
 
 const CHART_TABS = {
   smoke_map: ['map'],
+  // A polygon map that is not smoke; smoke is shown as smoke_map (asSmokeMap).
+  polygon_map: ['map', 'metadata'],
   heatmap: ['map', 'statistics', 'metadata'],
   heatmap_multi: ['map', 'metadata'],
   timeseries: ['chart', 'statistics', 'metadata'],
@@ -788,6 +795,8 @@ const ARTIFACT_TABS = {
   table: ['table', 'metadata'],
   timeseries: ['metadata'],
 }
+// Polygon maps have no gridded variable to relate and no figure or table export of their own.
+const POLYGON_TYPES = new Set(['smoke_map', 'polygon_map'])
 const TAB_LABELS = { map: 'Map', chart: 'Chart', statistics: 'Statistics', metadata: 'Metadata', table: 'Table' }
 
 const PANEL_COUNTS = [2, 3, 4]
@@ -933,8 +942,9 @@ function ArtifactTabsPanel({
         />
       </div>
 
-      {metaChips.length > 0 && (
-        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', padding: '12px 22px 0' }}>
+      {(metaChips.length > 0 || artifact.mode) && (
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center', padding: '12px 22px 0' }}>
+          <ModeBadge badge={modeBadge(artifact.mode)} />
           {metaChips.map((chip, i) => <MetaChip key={i}>{chip}</MetaChip>)}
         </div>
       )}
@@ -971,7 +981,7 @@ export default function OutputPanel({
   rightPanelTab = null, onSelectRightPanelTab, hasRunningJobs = false,
 }) {
   const kind = focusedOutput?.kind
-  const chart = kind === 'chart' ? focusedOutput.data : null
+  const chart = kind === 'chart' ? asSmokeMap(focusedOutput.data) : null
   const artifact = kind === 'artifact' ? focusedOutput.data : null
   const isMetadataTabbedArtifact = artifact?.type === 'table' || artifact?.type === 'timeseries'
 
@@ -1169,7 +1179,8 @@ export default function OutputPanel({
         </div>
         <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '18px 22px' }}>
           <div style={{ fontSize: '16px', fontWeight: 800, color: 'var(--text-primary)', marginBottom: '4px' }}>{artifact.title || 'Output'}</div>
-          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', margin: '10px 0 16px' }}>
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center', margin: '10px 0 16px' }}>
+            <ModeBadge badge={modeBadge(artifact.mode)} />
             {artifactMetaChips(artifact).map((chip, i) => <MetaChip key={i}>{chip}</MetaChip>)}
           </div>
           <ArtifactMessage artifact={artifact} />
@@ -1193,8 +1204,9 @@ export default function OutputPanel({
         />
       </div>
 
-      {metaChips.length > 0 && (
-        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', padding: '12px 22px 0' }}>
+      {(metaChips.length > 0 || chart.mode) && (
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center', padding: '12px 22px 0' }}>
+          <ModeBadge badge={modeBadge(chart.mode)} />
           {metaChips.map((chip, i) => <MetaChip key={i}>{chip}</MetaChip>)}
         </div>
       )}
@@ -1230,10 +1242,11 @@ export default function OutputPanel({
           </>
         )}
         {activeTab === 'map' && chart.type === 'smoke_map' && <MapLibreSmokePanel payload={chart} />}
+        {activeTab === 'map' && chart.type === 'polygon_map' && <MapLibrePolygonPanel payload={chart} />}
         {activeTab === 'map' && chart.type === 'heatmap_multi' && <HeatmapMultiPanel payload={chart} />}
         {activeTab === 'chart' && chart.type === 'timeseries' && <TimeSeriesPanel payload={chart} />}
         {activeTab === 'chart' && chart.type === 'profile' && <ProfilePanel payload={chart} />}
-        {chart.type !== 'smoke_map' && (activeTab === 'map' || activeTab === 'chart') && (
+        {!POLYGON_TYPES.has(chart.type) && (activeTab === 'map' || activeTab === 'chart') && (
           <RelatedVariablesPanel chart={chart} onSend={onSend} />
         )}
         {/* The tab follows the slider. It also has to follow the TOGGLE,
@@ -1248,7 +1261,7 @@ export default function OutputPanel({
         )}
       </div>
 
-      {chart.type !== 'smoke_map' && (activeTab === 'map' || activeTab === 'chart') && (
+      {!POLYGON_TYPES.has(chart.type) && (activeTab === 'map' || activeTab === 'chart') && (
         <div style={{ padding: '0 22px 14px', flexShrink: 0 }}>
           <ChartToolbar chart={chart} plotRootRef={plotRootRef} />
         </div>

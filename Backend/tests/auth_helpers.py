@@ -31,7 +31,7 @@ import jwt
 from cryptography.hazmat.primitives.asymmetric import ec
 from jwt.algorithms import ECAlgorithm
 
-from tta_backend.config.settings import get_settings
+from tta_backend.infrastructure.settings import get_settings
 from tta_backend.services.supabase_jwt import AuthenticatedUser, SupabaseJwtVerifier
 
 # Derived from the same setting api.py builds its own verifier's issuer from

@@ -18,8 +18,8 @@ import time
 from collections import OrderedDict
 from typing import Any
 
-from tta_backend.config.settings import get_settings
-from tta_backend.utils.metrics import record_cache_hit, record_cache_miss
+from tta_backend.infrastructure.settings import get_settings
+from tta_backend.infrastructure.metrics import record_cache_hit, record_cache_miss
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +58,7 @@ _CREDENTIAL_PARAMS = ("edl_token",)
 #
 # ``raw`` is stored exactly as ``call_tool`` returned it — a string for most
 # tools, a content list for some — never a parsed or re-serialized form, so
-# downstream parse_tool_result and model_view_describe_dataset behave
+# downstream parse_tool_result behaves
 # identically on a hit and on a miss.
 _CACHE: OrderedDict[str, tuple[float, Any]] = OrderedDict()
 

@@ -1,0 +1,28 @@
+name: smoke-map
+version: 1
+status: draft
+description: Map the NOAA HMS smoke plumes for one date, over an area or the whole product.
+examples:
+  - Was there smoke over Pennsylvania on 2024-06-29?
+  - Show the HMS smoke extent over New York for 2023-06-07.
+  - Show all the HMS smoke on 2023-06-07.
+
+inputs:
+  date: {type: date, ask: "Which date?"}
+  # Absent means the whole product, not clipped to an area.
+  area: {type: area, default: null}
+
+steps:
+  - id: extent
+    use: sources.smoke.get_extent
+    with: {date: $date, area: $area}
+  - id: figure
+    use: render.polygon_map
+    with: {polygons: [$extent]}
+
+outputs:
+  findings:
+    - {name: plumes, value: $extent.summary.plumes, unit: plumes}
+    - {name: smoke_area, value: $extent.summary.area_km2, unit: km2, optional: true}
+  figures: [$figure]
+  data: [$extent]

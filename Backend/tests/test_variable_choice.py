@@ -1,69 +1,6 @@
-import importlib.util
 import unittest
 
 
-class VariableChoiceModelTests(unittest.TestCase):
-    def test_agent_result_variable_choice_round_trips_through_json(self):
-        """Tracer: the deterministic picker payload survives the same
-        agent_result_to_json -> parse_agent_result trip the SSE layer runs it
-        through, so a low/medium-confidence turn's candidate list reaches the
-        frontend byte-for-byte as the resolver computed it."""
-        from tta_backend.models import parse_agent_result
-        from tta_backend.models.agent_result import (
-            AgentResult,
-            VariableChoice,
-            VariableChoiceOption,
-            agent_result_to_json,
-        )
-
-        result = AgentResult(
-            text="",
-            variable_choice=VariableChoice(
-                message="This dataset has 3 variables I can't confidently narrow down — pick one:",
-                candidates=[
-                    VariableChoiceOption(
-                        name="Terra/AOD_550/Mean",
-                        category="distinct",
-                        units="1",
-                        valid_fraction=0.82,
-                        reasons=["has units", "aggregated mean field"],
-                        prompt="plot AOD over New Jersey last week using Terra/AOD_550/Mean",
-                    ),
-                ],
-            ),
-        )
-
-        restored = parse_agent_result(agent_result_to_json(result))
-
-        self.assertIsNotNone(restored.variable_choice)
-        self.assertEqual(
-            restored.variable_choice.message,
-            "This dataset has 3 variables I can't confidently narrow down — pick one:",
-        )
-        self.assertEqual(len(restored.variable_choice.candidates), 1)
-        opt = restored.variable_choice.candidates[0]
-        self.assertEqual(opt.name, "Terra/AOD_550/Mean")
-        self.assertEqual(opt.category, "distinct")
-        self.assertEqual(opt.units, "1")
-        self.assertEqual(opt.valid_fraction, 0.82)
-        self.assertEqual(opt.reasons, ["has units", "aggregated mean field"])
-        self.assertEqual(
-            opt.prompt, "plot AOD over New Jersey last week using Terra/AOD_550/Mean",
-        )
-
-    def test_agent_result_defaults_variable_choice_to_none(self):
-        """The overwhelming majority of turns (high-confidence or non-variable)
-        carry no picker — the field is optional and omitted, never an empty
-        payload the frontend must special-case."""
-        from tta_backend.models import parse_agent_result
-        from tta_backend.models.agent_result import AgentResult, agent_result_to_json
-
-        restored = parse_agent_result(agent_result_to_json(AgentResult(text="ok")))
-
-        self.assertIsNone(restored.variable_choice)
-
-
-@unittest.skipIf(importlib.util.find_spec("xarray") is None, "xarray is not installed")
 class BuildVariableChoiceTests(unittest.TestCase):
     def setUp(self):
         import numpy as np
@@ -80,9 +17,9 @@ class BuildVariableChoiceTests(unittest.TestCase):
         products) resolves to no name; the builder turns the resolver's own
         ranked candidates into a picker payload whose message names the count
         and whose options carry every non-empty candidate."""
-        from tta_backend.models.agent_result import VariableChoice
-        from tta_backend.preprocessing.variable_choice_builder import build_variable_choice
-        from tta_backend.preprocessing.variable_resolver import resolve
+        from tta_backend.domain.aggregation.variable_choice import VariableChoice
+        from tta_backend.domain.aggregation.variable_choice import build_variable_choice
+        from tta_backend.domain.aggregation.variable_resolver import resolve
 
         ds = self.xr.Dataset({
             "DT_AOD_550_AVG": self._var([[0.1, 0.2]]),
@@ -102,8 +39,8 @@ class BuildVariableChoiceTests(unittest.TestCase):
         """A picker row shows units so the researcher can tell the fields
         apart -- read straight off each variable's CF ``units`` attr, never
         invented; a variable with no units attr yields None, not a guess."""
-        from tta_backend.preprocessing.variable_choice_builder import build_variable_choice
-        from tta_backend.preprocessing.variable_resolver import resolve
+        from tta_backend.domain.aggregation.variable_choice import build_variable_choice
+        from tta_backend.domain.aggregation.variable_resolver import resolve
 
         ds = self.xr.Dataset({
             "AOD_550_AVG": self._var([[0.1, 0.2]], {"units": "1"}),
@@ -119,8 +56,8 @@ class BuildVariableChoiceTests(unittest.TestCase):
         """The AERDA shape (432 collided leaves): the picker
         shows every real candidate, grouped/searchable, never a 20-item prose
         excerpt. All 400 non-empty distinct fields must be present."""
-        from tta_backend.preprocessing.variable_choice_builder import build_variable_choice
-        from tta_backend.preprocessing.variable_resolver import resolve
+        from tta_backend.domain.aggregation.variable_choice import build_variable_choice
+        from tta_backend.domain.aggregation.variable_resolver import resolve
 
         ds = self.xr.Dataset({
             f"field_{i:03d}": self._var([[float(i), float(i) + 1]]) for i in range(400)
@@ -133,8 +70,8 @@ class BuildVariableChoiceTests(unittest.TestCase):
         """A field with no data over the range would plot blank, so it is not
         offered -- but the count of such exclusions is disclosed, so the list
         reads as the populated subset, not the whole file."""
-        from tta_backend.preprocessing.variable_choice_builder import build_variable_choice
-        from tta_backend.preprocessing.variable_resolver import resolve
+        from tta_backend.domain.aggregation.variable_choice import build_variable_choice
+        from tta_backend.domain.aggregation.variable_resolver import resolve
 
         ds = self.xr.Dataset({
             "DT_AOD_550_AVG": self._var([[0.1, 0.2]]),
@@ -151,8 +88,8 @@ class BuildVariableChoiceTests(unittest.TestCase):
         """When the resolver auto-picked at medium confidence, the picker frames
         the list as 'showing X, pick another if not' -- the answer already
         arrived; the picker is the one-click override, not a block."""
-        from tta_backend.preprocessing.variable_choice_builder import build_variable_choice
-        from tta_backend.preprocessing.variable_resolver import resolve
+        from tta_backend.domain.aggregation.variable_choice import build_variable_choice
+        from tta_backend.domain.aggregation.variable_resolver import resolve
 
         # A single weakly-signalled pickable field -> medium confidence, auto-pick.
         ds = self.xr.Dataset({
@@ -172,8 +109,8 @@ class BuildVariableChoiceTests(unittest.TestCase):
         """Clicking a candidate re-sends the WHOLE original request with the
         variable appended -- a self-contained turn carrying its own region/time,
         never a bare 'use <var>' that leans on cross-turn context carryover."""
-        from tta_backend.preprocessing.variable_choice_builder import build_variable_choice, fill_prompts
-        from tta_backend.preprocessing.variable_resolver import resolve
+        from tta_backend.domain.aggregation.variable_choice import build_variable_choice, fill_prompts
+        from tta_backend.domain.aggregation.variable_resolver import resolve
 
         ds = self.xr.Dataset({
             "DT_AOD_550_AVG": self._var([[0.1, 0.2]]),
@@ -195,36 +132,13 @@ class BuildVariableChoiceTests(unittest.TestCase):
         )
 
 
-    def test_emit_variable_choice_payload_publishes_the_built_picker(self):
-        """The tool-layer seam: on catching the short-circuit, the tool builds
-        the picker from the signal's resolution and emits it out-of-band. Assert
-        the emitted payload is the deterministic candidate list, not model text."""
-        from tta_backend.preprocessing.variable_choice_builder import emit_variable_choice_payload
-        from tta_backend.preprocessing.variable_resolver import resolve
-        from tta_backend.utils import streaming
-
-        ds = self.xr.Dataset({
-            "DT_AOD_550_AVG": self._var([[0.1, 0.2]]),
-            "COMBINE_AOD_550_AVG": self._var([[0.3, 0.4]]),
-        })
-        captured = []
-        token = streaming._variable_choice_emitter.set(lambda p: captured.append(p))
-        try:
-            emit_variable_choice_payload(resolve(ds), ds)
-        finally:
-            streaming._variable_choice_emitter.reset(token)
-
-        self.assertEqual(len(captured), 1)
-        names = {c["name"] for c in captured[0]["candidates"]}
-        self.assertEqual(names, {"DT_AOD_550_AVG", "COMBINE_AOD_550_AVG"})
-
     def test_medium_confidence_pick_stashes_a_picker_in_the_aggregate_meta(self):
         """A medium-confidence auto-pick (one weakly-signalled science field
         beside implementation plumbing) delivers its answer AND rides an
         override picker out in meta.variable_resolution.variable_choice -- the
         channel the tool copies into chart provenance and dispatch lifts into
         AgentResult.variable_choice."""
-        from tta_backend.preprocessing.aggregation_service import AggregationService
+        from tta_backend.domain.aggregation.aggregation_service import AggregationService
 
         ds = self.xr.Dataset(
             {

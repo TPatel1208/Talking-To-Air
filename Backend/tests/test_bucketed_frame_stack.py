@@ -64,7 +64,7 @@ class BucketAxisSpansTheRequestTests(unittest.TestCase):
         self.span = ("2024-01-01T00:00:00", "2024-01-04T23:59:59")
 
     def _stack(self):
-        from tta_backend.preprocessing.frame_stack import build_frame_stack
+        from tta_backend.domain.aggregation.frame_stack import build_frame_stack
 
         return build_frame_stack(
             self.field, time_dim="time", cadence="daily", span=self.span,
@@ -126,7 +126,7 @@ class CadenceIsAPreconditionTests(unittest.TestCase):
         )
 
     def test_an_unknown_cadence_is_refused_by_name(self):
-        from tta_backend.preprocessing.frame_stack import build_frame_stack
+        from tta_backend.domain.aggregation.frame_stack import build_frame_stack
 
         with self.assertRaises(ValueError) as raised:
             build_frame_stack(self.field, time_dim="time", cadence="unknown")
@@ -145,7 +145,7 @@ class CadenceIsAPreconditionTests(unittest.TestCase):
             [np.ones((4, 4)), np.ones((4, 4)) * 3],
         )
 
-        from tta_backend.preprocessing.frame_stack import build_frame_stack
+        from tta_backend.domain.aggregation.frame_stack import build_frame_stack
 
         stack = build_frame_stack(field, time_dim="time", cadence="monthly")
 
@@ -154,6 +154,72 @@ class CadenceIsAPreconditionTests(unittest.TestCase):
             [("2024-01-01T00:00:00", "2024-02-01T00:00:00"),
              ("2024-02-01T00:00:00", "2024-03-01T00:00:00"),
              ("2024-03-01T00:00:00", "2024-04-01T00:00:00")],
+        )
+        self.assertEqual([f.n_granules for f in stack.frames], [1, 0, 1])
+
+    def test_a_seasonal_product_steps_by_seasons_across_the_year_end(self):
+        """Seasons start in December, March, June and September, and DJF
+        belongs to its December: a January stamp joins the season that began
+        the December before, not a season of its own year."""
+        import numpy as np
+        import xarray as xr
+
+        field = _field(
+            xr, np, ["2018-12-01T00:00", "2019-01-20T00:00", "2019-06-01T00:00"],
+            [np.ones((4, 4)), np.ones((4, 4)) * 3, np.ones((4, 4)) * 5],
+        )
+
+        from tta_backend.domain.aggregation.frame_stack import build_frame_stack
+
+        stack = build_frame_stack(
+            field, time_dim="time", cadence="seasonal",
+            span=("2018-12-01T00:00:00", "2019-08-31T23:59:59"),
+        )
+
+        self.assertEqual(
+            [(f.t_start, f.t_end) for f in stack.frames],
+            [("2018-12-01T00:00:00", "2019-03-01T00:00:00"),
+             ("2019-03-01T00:00:00", "2019-06-01T00:00:00"),
+             ("2019-06-01T00:00:00", "2019-09-01T00:00:00")],
+        )
+        self.assertEqual([f.n_granules for f in stack.frames], [2, 0, 1])
+
+    def test_a_span_starting_inside_a_season_snaps_to_its_start(self):
+        import numpy as np
+        import xarray as xr
+
+        field = _field(xr, np, ["2020-01-01T00:00", "2020-03-01T00:00"], [np.ones((4, 4)), np.ones((4, 4))])
+
+        from tta_backend.domain.aggregation.frame_stack import build_frame_stack
+
+        stack = build_frame_stack(
+            field, time_dim="time", cadence="seasonal",
+            span=("2020-02-10T00:00:00", "2020-04-30T23:59:59"),
+        )
+
+        self.assertEqual([f.t_start for f in stack.frames], ["2019-12-01T00:00:00", "2020-03-01T00:00:00"])
+
+    def test_an_annual_product_steps_by_years(self):
+        import numpy as np
+        import xarray as xr
+
+        field = _field(
+            xr, np, ["2019-01-01T00:00", "2021-01-01T00:00"],
+            [np.ones((4, 4)), np.ones((4, 4)) * 3],
+        )
+
+        from tta_backend.domain.aggregation.frame_stack import build_frame_stack
+
+        stack = build_frame_stack(
+            field, time_dim="time", cadence="annual",
+            span=("2019-06-01T00:00:00", "2021-12-31T23:59:59"),
+        )
+
+        self.assertEqual(
+            [(f.t_start, f.t_end) for f in stack.frames],
+            [("2019-01-01T00:00:00", "2020-01-01T00:00:00"),
+             ("2020-01-01T00:00:00", "2021-01-01T00:00:00"),
+             ("2021-01-01T00:00:00", "2022-01-01T00:00:00")],
         )
         self.assertEqual([f.n_granules for f in stack.frames], [1, 0, 1])
 
@@ -183,7 +249,7 @@ class BlockMeanToTheCellCeilingTests(unittest.TestCase):
         )
 
     def _stack(self, target_cells=6):
-        from tta_backend.preprocessing.frame_stack import build_frame_stack
+        from tta_backend.domain.aggregation.frame_stack import build_frame_stack
 
         return build_frame_stack(
             self.field, time_dim="time", cadence="daily", target_cells=target_cells,
@@ -251,7 +317,7 @@ class BlockMeanToTheCellCeilingTests(unittest.TestCase):
             lats=np.linspace(30.0, 34.0, 5), lons=np.linspace(-100.0, -96.0, 5),
         )
 
-        from tta_backend.preprocessing.frame_stack import build_frame_stack
+        from tta_backend.domain.aggregation.frame_stack import build_frame_stack
 
         stack = build_frame_stack(field, time_dim="time", cadence="daily", target_cells=6)
 
@@ -295,7 +361,7 @@ class NativeResolutionStatisticsTests(unittest.TestCase):
         )
 
     def _stack(self):
-        from tta_backend.preprocessing.frame_stack import build_frame_stack
+        from tta_backend.domain.aggregation.frame_stack import build_frame_stack
 
         return build_frame_stack(
             self.field, time_dim="time", cadence="daily", target_cells=6,
@@ -320,7 +386,7 @@ class NativeResolutionStatisticsTests(unittest.TestCase):
         and the statistics tool use. A frame that averaged its cells plainly
         would disagree with the map it was derived from, by a few percent on a
         continental region and invisibly on a small one."""
-        from tta_backend.preprocessing.aggregation_service import area_weighted_mean
+        from tta_backend.domain.aggregation.aggregation_service import area_weighted_mean
 
         stack = self._stack()
         native_bucket_field = self.field.isel(time=0)
@@ -343,7 +409,7 @@ class NativeResolutionStatisticsTests(unittest.TestCase):
             lats=np.linspace(30.0, 34.0, 5), lons=np.linspace(-100.0, -96.0, 5),
         )
 
-        from tta_backend.preprocessing.frame_stack import build_frame_stack
+        from tta_backend.domain.aggregation.frame_stack import build_frame_stack
 
         stack = build_frame_stack(field, time_dim="time", cadence="daily")
 
@@ -384,7 +450,7 @@ class ValidFractionTests(unittest.TestCase):
         the budget shrinks. Here the two answers are 33% and 100% -- the frame
         grid would tell a scrubbing user that the emptiest hour of the week was
         the best-observed one."""
-        from tta_backend.preprocessing.frame_stack import build_frame_stack
+        from tta_backend.domain.aggregation.frame_stack import build_frame_stack
 
         stack = build_frame_stack(
             self._sparse_but_evenly_spread(), time_dim="time", cadence="daily",
@@ -409,7 +475,7 @@ class ValidFractionTests(unittest.TestCase):
             lats=[0.0, 60.0], lons=[-100.0, -99.0],
         )
 
-        from tta_backend.preprocessing.frame_stack import build_frame_stack
+        from tta_backend.domain.aggregation.frame_stack import build_frame_stack
 
         stack = build_frame_stack(field, time_dim="time", cadence="daily")
 
@@ -434,7 +500,7 @@ class ValidFractionTests(unittest.TestCase):
             lats=[0.0, 0.0, 0.0, 0.0], lons=[-100.0, -99.0, -98.0, -97.0],
         )
 
-        from tta_backend.preprocessing.frame_stack import build_frame_stack
+        from tta_backend.domain.aggregation.frame_stack import build_frame_stack
 
         # cos(0) = 1 everywhere, so the in-region area is simply its 8 cells.
         in_region = build_frame_stack(
@@ -456,7 +522,7 @@ class ValidFractionTests(unittest.TestCase):
             [np.ones((4, 4)), np.ones((4, 4))],
         )
 
-        from tta_backend.preprocessing.frame_stack import build_frame_stack
+        from tta_backend.domain.aggregation.frame_stack import build_frame_stack
 
         stack = build_frame_stack(field, time_dim="time", cadence="daily")
 
@@ -486,7 +552,7 @@ class QaRollUpByAreaSumsTests(unittest.TestCase):
         )
 
     def _stack(self, qa_counts):
-        from tta_backend.preprocessing.frame_stack import build_frame_stack
+        from tta_backend.domain.aggregation.frame_stack import build_frame_stack
 
         return build_frame_stack(
             self.field, time_dim="time", cadence="daily", qa_counts=qa_counts,
@@ -530,7 +596,7 @@ class QaRollUpByAreaSumsTests(unittest.TestCase):
             [np.full((4, 4), np.nan), np.full((4, 4), 6.0)],
         )
 
-        from tta_backend.preprocessing.frame_stack import build_frame_stack
+        from tta_backend.domain.aggregation.frame_stack import build_frame_stack
 
         stack = build_frame_stack(
             field, time_dim="time", cadence="daily",
@@ -619,7 +685,7 @@ class CadenceTierIsExactTests(unittest.TestCase):
         )
 
     def _stack(self):
-        from tta_backend.preprocessing.frame_stack import build_frame_stack
+        from tta_backend.domain.aggregation.frame_stack import build_frame_stack
 
         return build_frame_stack(self.field, time_dim="time", cadence="daily")
 
@@ -654,7 +720,7 @@ class CadenceTierIsExactTests(unittest.TestCase):
         different measurements of one week."""
         np = self.np
 
-        from tta_backend.preprocessing.aggregation_service import AggregationService
+        from tta_backend.domain.aggregation.aggregation_service import AggregationService
 
         stack = self._stack()
         period = AggregationService()._cadence_weighted_mean(
@@ -715,7 +781,7 @@ class CoarsenedTierAndItsDeltaTests(unittest.TestCase):
         )
 
     def _stack(self, field, max_frames=2):
-        from tta_backend.preprocessing.frame_stack import build_frame_stack
+        from tta_backend.domain.aggregation.frame_stack import build_frame_stack
 
         return build_frame_stack(
             field, time_dim="time", cadence="daily", max_frames=max_frames,
@@ -819,7 +885,7 @@ class CoarsenedTierAndItsDeltaTests(unittest.TestCase):
         checked; a mean of the two defined daily rates would say 50%."""
         field = self._daily([[[1.0, 2.0, 3.0, 4.0, 5.0]]])
 
-        from tta_backend.preprocessing.frame_stack import build_frame_stack
+        from tta_backend.domain.aggregation.frame_stack import build_frame_stack
 
         stack = build_frame_stack(
             field, time_dim="time", cadence="daily", max_frames=2,
@@ -843,7 +909,7 @@ class CoarsenedTierAndItsDeltaTests(unittest.TestCase):
             [12.0, 12.0, 12.0, 0.0, 0.0],
         ]])
 
-        from tta_backend.preprocessing.frame_stack import build_frame_stack
+        from tta_backend.domain.aggregation.frame_stack import build_frame_stack
 
         native = build_frame_stack(
             field, time_dim="time", cadence="daily", max_frames=2,
@@ -911,7 +977,7 @@ class ShippedArrayAgreementTests(unittest.TestCase):
         return self._days(day_one, day_two)
 
     def _stack(self, field, *, target_cells=1, **kwargs):
-        from tta_backend.preprocessing.frame_stack import build_frame_stack
+        from tta_backend.domain.aggregation.frame_stack import build_frame_stack
 
         return build_frame_stack(
             field, time_dim="time", cadence="daily",
@@ -994,7 +1060,7 @@ class ShippedArrayAgreementTests(unittest.TestCase):
         sharing ONE account is the same failure wearing the other shoe: a
         reader given "at native resolution" beside a number measured on the
         frame grid has been told something false about a real measurement."""
-        from tta_backend.preprocessing.frame_stack import (
+        from tta_backend.domain.aggregation.frame_stack import (
             DELTA_BASIS, FRAME_GRID_DELTA_BASIS,
         )
 
@@ -1057,7 +1123,7 @@ class PlaneAgreementIdentityTests(unittest.TestCase):
         )
 
     def _stack(self, field, **kwargs):
-        from tta_backend.preprocessing.frame_stack import build_frame_stack
+        from tta_backend.domain.aggregation.frame_stack import build_frame_stack
 
         return build_frame_stack(
             field, time_dim="time", cadence="daily", target_cells=1,
@@ -1171,7 +1237,7 @@ class PlaneAgreementIdentityTests(unittest.TestCase):
         basis string is the failure ``DELTA_BASIS`` exists to prevent wearing
         yet another shoe, and it would be an easy one to ship, because the
         wrong basis and the right one describe numbers that are both zero."""
-        from tta_backend.preprocessing.frame_stack import (
+        from tta_backend.domain.aggregation.frame_stack import (
             FRAME_GRID_DELTA_BASIS, PLANE_AGREEMENT_BASIS,
         )
 
@@ -1235,7 +1301,7 @@ class BlockMaxAndMinPlaneTests(unittest.TestCase):
         ]
 
     def _stack(self, field, *, statistics=("mean", "max", "min"), target_cells=4, **kwargs):
-        from tta_backend.preprocessing.frame_stack import build_frame_stack
+        from tta_backend.domain.aggregation.frame_stack import build_frame_stack
 
         return build_frame_stack(
             field, time_dim="time", cadence="daily", target_cells=target_cells,
@@ -1376,7 +1442,7 @@ class PlanesAreOptionalTests(unittest.TestCase):
         )
 
     def _stack(self, **kwargs):
-        from tta_backend.preprocessing.frame_stack import build_frame_stack
+        from tta_backend.domain.aggregation.frame_stack import build_frame_stack
 
         return build_frame_stack(
             self._field(), time_dim="time", cadence="daily", target_cells=4,
@@ -1456,7 +1522,7 @@ class PlanesAreOptionalTests(unittest.TestCase):
         readout that had been quietly re-pointed at the plane would print 100
         where it has always printed 50.5.
         """
-        from tta_backend.preprocessing import frame_stack as module
+        from tta_backend.domain.aggregation import frame_stack as module
 
         stack = self._stack(statistics=("mean", "max"))
 
@@ -1512,7 +1578,7 @@ class ExtentOverstatementTests(unittest.TestCase):
         )
 
     def _stack(self, field, *, target_cells=1, **kwargs):
-        from tta_backend.preprocessing.frame_stack import build_frame_stack
+        from tta_backend.domain.aggregation.frame_stack import build_frame_stack
 
         return build_frame_stack(
             field, time_dim="time", cadence="daily", target_cells=target_cells,
@@ -1638,7 +1704,7 @@ class ExtentOverstatementTests(unittest.TestCase):
         measures something neither of them does -- area painted versus area
         observed, not value agreement. Three quantities, three basis strings,
         for the reason ``DELTA_BASIS`` was written down in the first place."""
-        from tta_backend.preprocessing.frame_stack import (
+        from tta_backend.domain.aggregation.frame_stack import (
             DELTA_BASIS, EXTENT_OVERSTATEMENT_BASIS, FRAME_GRID_DELTA_BASIS,
         )
 
@@ -1700,7 +1766,7 @@ class PooledColourScaleTests(unittest.TestCase):
         loud.ravel()[:12] = 5000.0
         stack_of = self._days([calm] * 9 + [loud])
 
-        from tta_backend.preprocessing.frame_stack import build_frame_stack
+        from tta_backend.domain.aggregation.frame_stack import build_frame_stack
 
         stack = build_frame_stack(stack_of, time_dim="time", cadence="daily")
         vmin, vmax = stack.value_range
@@ -1723,7 +1789,7 @@ class PooledColourScaleTests(unittest.TestCase):
             values[block_row * 3 + 1, block_col * 3 + 1] = 100.0
         field = self._days([values, values.copy()])
 
-        from tta_backend.preprocessing.frame_stack import build_frame_stack
+        from tta_backend.domain.aggregation.frame_stack import build_frame_stack
 
         stack = build_frame_stack(
             field, time_dim="time", cadence="daily", target_cells=100,
@@ -1746,7 +1812,7 @@ class PooledColourScaleTests(unittest.TestCase):
         first.ravel()[:5] = 0.0
         field = self._days([first, np.full((10, 10), 100.0)])
 
-        from tta_backend.preprocessing.frame_stack import build_frame_stack
+        from tta_backend.domain.aggregation.frame_stack import build_frame_stack
 
         stack = build_frame_stack(field, time_dim="time", cadence="daily")
 
@@ -1759,7 +1825,7 @@ class PooledColourScaleTests(unittest.TestCase):
         np = self.np
         field = self._days([np.full((4, 4), np.nan), np.full((4, 4), np.nan)])
 
-        from tta_backend.preprocessing.frame_stack import build_frame_stack
+        from tta_backend.domain.aggregation.frame_stack import build_frame_stack
 
         stack = build_frame_stack(field, time_dim="time", cadence="daily")
 
@@ -1782,7 +1848,7 @@ class TheMaskingSeamSuppliesTheAreaCountersTests(unittest.TestCase):
         import numpy as np
         import xarray as xr
 
-        from tta_backend.preprocessing.aggregation_service import AggregationService
+        from tta_backend.domain.aggregation.aggregation_service import AggregationService
 
         # cos(0) = 1 against cos(60) = 0.5, so a weighted counter and an
         # unweighted one cannot be confused. Each timestep passes QA at one
@@ -1903,7 +1969,7 @@ class OneGraphWalkTests(unittest.TestCase):
         there is nothing left that needs its own."""
         import numpy as np
 
-        from tta_backend.preprocessing.frame_stack import build_frame_stack
+        from tta_backend.domain.aggregation.frame_stack import build_frame_stack
 
         loads = []
         field = self._lazy_days([np.full((2, 2), float(d)) for d in range(3)], loads)
@@ -1931,7 +1997,7 @@ class OneGraphWalkTests(unittest.TestCase):
         """
         import numpy as np
 
-        from tta_backend.preprocessing.frame_stack import build_frame_stack
+        from tta_backend.domain.aggregation.frame_stack import build_frame_stack
 
         loads = []
         field = self._lazy_days([np.full((2, 2), float(d)) for d in range(3)], loads)
@@ -1959,7 +2025,7 @@ class OneGraphWalkTests(unittest.TestCase):
         """
         import numpy as np
 
-        from tta_backend.preprocessing.frame_stack import build_frame_stack
+        from tta_backend.domain.aggregation.frame_stack import build_frame_stack
 
         def _reads(statistics):
             loads = []
@@ -1992,7 +2058,7 @@ class OneGraphWalkTests(unittest.TestCase):
         nothing hands them over."""
         import numpy as np
 
-        from tta_backend.preprocessing.frame_stack import build_frame_stack
+        from tta_backend.domain.aggregation.frame_stack import build_frame_stack
 
         loads = []
         field = self._lazy_days([np.full((2, 2), float(d)) for d in range(3)], loads)
@@ -2007,7 +2073,7 @@ class OneGraphWalkTests(unittest.TestCase):
         double the I/O of every scrubbed plot and nothing would say so."""
         import numpy as np
 
-        from tta_backend.preprocessing.frame_stack import build_frame_stack
+        from tta_backend.domain.aggregation.frame_stack import build_frame_stack
 
         loads = []
         field = self._lazy_days([np.full((2, 2), float(d)) for d in range(3)], loads)
@@ -2026,7 +2092,7 @@ class OneGraphWalkTests(unittest.TestCase):
         describe a subset of the data while claiming to describe all of it."""
         import numpy as np
 
-        from tta_backend.preprocessing.frame_stack import build_frame_stack
+        from tta_backend.domain.aggregation.frame_stack import build_frame_stack
 
         loads = []
         field = self._lazy_days(
@@ -2061,7 +2127,7 @@ class RegionAreaIsRecordedAtTheMaskTests(unittest.TestCase):
         import numpy as np
         import xarray as xr
 
-        from tta_backend.utils.plotting import mask_data_by_geometry
+        from tta_backend.domain.masking.geometry import mask_data_by_geometry
 
         band = xr.DataArray(
             np.array([[1.0, 2.0], [3.0, 4.0]]),

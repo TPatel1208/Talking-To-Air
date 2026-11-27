@@ -1,22 +1,103 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
-from tta_backend.models import (
-    AgentResult,
-    DispatchResult,
-    agent_result_to_json,
-    chart_reference,
-    is_chart_reference,
-    parse_chart_payload,
-    parse_tool_results,
-)
+from pydantic import BaseModel, Field, ValidationError
+
+from tta_backend.harness.results import RUN_ID_PATTERN, Mode
 from tta_backend.repositories import chart_repository
 
 
+# Where a harness chart's link to its run is kept in the stored payload.
+LINK_KEY = "harness"
+
+
+class ChartPayload(BaseModel, extra="allow"):
+    type: str
+    title: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+# The few scalar fields a chart reference keeps: enough to name the chart and
+# to find the stored row again.
+_CHART_REFERENCE_KEYS = ("chart_id", "type", "title", "variable", "units")
+
+
+def chart_reference(stored: dict[str, Any]) -> ChartPayload:
+    """A persisted chart reduced to a pointer at its agent_charts row.
+
+    The row is the source of truth for the grid; ``reference=True`` tells a
+    reader to look the chart up rather than persist what it was handed."""
+    fields = {key: stored[key] for key in _CHART_REFERENCE_KEYS if stored.get(key) is not None}
+    metadata = stored.get("metadata")
+    name = metadata.get("name") if isinstance(metadata, dict) else None
+    # model_validate, not the constructor: `reference` is an extra field
+    # (extra="allow"), which a typed constructor call does not declare.
+    return ChartPayload.model_validate({
+        **fields,
+        "metadata": {"name": name} if name else {},
+        "reference": True,
+    })
+
+
+def is_chart_reference(payload: dict[str, Any]) -> bool:
+    return payload.get("reference") is True and bool(payload.get("chart_id"))
+
+
+@dataclass(frozen=True)
+class ChartLink:
+    """The run that drew a chart, the mode it ran in, and the handles the chart renders.
+
+    ``handle`` is the first of ``handles``. Kept in the chart's own row
+    (``metadata.harness``): the row is already owned by its user and deleted
+    with its session, and a run's charts are found from the other side
+    through the run's trace, so a table of links would only repeat both.
+    """
+
+    run_id: str
+    mode: Mode
+    handle: str | None
+    handles: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.handles and self.handle is not None:
+            object.__setattr__(self, "handles", (self.handle,))
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "run_id": self.run_id, "mode": self.mode.model_dump(mode="json"), "handle": self.handle,
+            "handles": list(self.handles),
+        }
+
+    def view(self) -> dict[str, Any]:
+        """The ``run_id`` and ``mode`` a chart or its artifact carries on the wire."""
+        return {"run_id": self.run_id, "mode": self.mode.view()}
+
+    @classmethod
+    def of(cls, payload: dict[str, Any]) -> ChartLink | None:
+        """The link a stored chart carries; None for a chart no harness run drew."""
+        metadata = payload.get("metadata")
+        link = metadata.get(LINK_KEY) if isinstance(metadata, dict) else None
+        if not isinstance(link, dict):
+            return None
+        run_id, handle, handles = link.get("run_id"), link.get("handle"), link.get("handles")
+        if not isinstance(run_id, str) or not RUN_ID_PATTERN.fullmatch(run_id):
+            return None
+        try:
+            mode = Mode.model_validate(link.get("mode"))
+        except ValidationError:
+            return None
+        listed = tuple(h for h in handles if isinstance(h, str)) if isinstance(handles, list) else ()
+        first = handle if isinstance(handle, str) else (listed[0] if listed else None)
+        return cls(run_id=run_id, mode=mode, handle=first, handles=listed)
+
+
 class ChartService:
-    async def persist_chart_payload(self, thread_id: str, chart: Any, user_id: str) -> dict[str, Any] | None:
-        """Store ``chart`` and return the stored row.
+    async def persist_chart_payload(
+        self, thread_id: str, chart: Any, user_id: str, *, link: ChartLink | None = None,
+    ) -> dict[str, Any] | None:
+        """Store ``chart`` and return the stored row, with ``link`` in its metadata when given.
 
         A chart reference is only ever looked up: it carries no grid, so
         saving it would replace the real row with a stub. None means the
@@ -28,6 +109,8 @@ class ChartService:
                 return stored
         if is_chart_reference(payload):
             return None
+        if link is not None:
+            payload["metadata"] = {**(payload.get("metadata") or {}), LINK_KEY: link.to_json()}
         return await chart_repository.save_chart(thread_id, payload, user_id)
 
     async def resolve_charts(self, charts: list[Any], user_id: str) -> list[dict[str, Any] | None]:
@@ -50,42 +133,9 @@ class ChartService:
                 resolved.append(payload)
         return resolved
 
-    async def checkpoint_envelope(self, result: AgentResult, thread_id: str, user_id: str) -> str:
-        """``result`` as the JSON a checkpointed ToolMessage carries.
-
-        Each chart is persisted first and then replaced by a reference to its
-        agent_charts row. The checkpoint rewrites a thread's whole message
-        list at every step, so a grid kept here would be stored again on
-        every later turn."""
-        return agent_result_to_json(await self._with_chart_references(result, thread_id, user_id))
-
-    async def checkpoint_dispatch_envelope(self, batch: DispatchResult, thread_id: str, user_id: str) -> str:
-        """``batch`` (the dispatch tool's result) as checkpointed JSON,
-        each item's charts swapped for references exactly as in
-        checkpoint_envelope."""
-        items = [
-            item.model_copy(update={"result": await self._with_chart_references(item.result, thread_id, user_id)})
-            if item.result is not None else item
-            for item in batch.results
-        ]
-        return DispatchResult(results=items).model_dump_json(exclude_none=True)
-
-    async def _with_chart_references(self, result: AgentResult, thread_id: str, user_id: str) -> AgentResult:
-        references = []
-        for chart in result.charts:
-            stored = await self.persist_chart_payload(thread_id, chart, user_id)
-            if stored is not None:
-                references.append(chart_reference(stored))
-        return result.model_copy(update={"charts": references})
-
     async def get_chart(self, chart_id: str) -> dict[str, Any] | None:
         return await chart_repository.get_chart(chart_id)
 
-    def parse_charts(self, content: Any) -> tuple[str | None, list[Any]]:
-        results = parse_tool_results(content)
-        if results:
-            return "\n\n".join(r.text for r in results), [chart for r in results for chart in r.charts]
-        chart = parse_chart_payload(content)
-        if chart is not None:
-            return None, [chart]
-        return None, []
+    async def get_owned_charts(self, chart_ids: list[str], user_id: str) -> dict[str, dict[str, Any]]:
+        """The charts among ``chart_ids`` that ``user_id`` owns, keyed by id."""
+        return await chart_repository.get_charts(chart_ids, user_id) if chart_ids else {}

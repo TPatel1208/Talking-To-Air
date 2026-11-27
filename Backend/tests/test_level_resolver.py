@@ -7,19 +7,13 @@ toward what gets *refused* and what gets *disclosed*, not toward the happy path.
 Numbers measured on live granules and live UMM-Var are named where they
 appear.
 """
-import importlib.util
-import json
 import os
 import sys
-import tempfile
 import unittest
-from unittest.mock import patch
 
 TESTS_DIR = os.path.dirname(__file__)
 if TESTS_DIR not in sys.path:
     sys.path.insert(0, TESTS_DIR)
-
-REQUIRED_MODULES = ["langchain_mcp_adapters", "fastmcp", "uvicorn", "xarray", "zarr", "pyarrow"]
 
 
 class ParsingALevelRequestTests(unittest.TestCase):
@@ -28,7 +22,7 @@ class ParsingALevelRequestTests(unittest.TestCase):
     therefore not an under-specified request, it is a different question."""
 
     def _parse(self, text):
-        from tta_backend.preprocessing.level_resolver import parse_level
+        from tta_backend.domain.aggregation.level_resolver import parse_level
 
         return parse_level(text)
 
@@ -83,7 +77,7 @@ class ParsingALevelRequestTests(unittest.TestCase):
         self.assertIn("km", suggestion)
 
     def _parse_with_axes(self, text, available):
-        from tta_backend.preprocessing.level_resolver import parse_level
+        from tta_backend.domain.aggregation.level_resolver import parse_level
 
         return parse_level(text, available=available)
 
@@ -198,7 +192,7 @@ class ResolvingAPhysicalLevelToALayerTests(unittest.TestCase):
     unchanged."""
 
     def _resolve(self, level, da=None, dim="layer"):
-        from tta_backend.preprocessing.level_resolver import resolve_level
+        from tta_backend.domain.aggregation.level_resolver import resolve_level
 
         return resolve_level(da if da is not None else _narrowed_profile(), dim, level)
 
@@ -246,7 +240,7 @@ class ResolvingAPhysicalLevelToALayerTests(unittest.TestCase):
         k, for every layer and both axes. This tests the resolver, not just
         discovery -- an off-by-one or a silent unit scaling passes every other
         assertion here and fails this one."""
-        from tta_backend.preprocessing.level_resolver import resolve_level
+        from tta_backend.domain.aggregation.level_resolver import resolve_level
 
         narrowed = _narrowed_profile()
         for kind, units, axis in (
@@ -361,7 +355,7 @@ class WorkingOnProductsBeyondTheOneItWasBuiltAgainstTests(unittest.TestCase):
     live UMM-Var records, not invented ones."""
 
     def _resolve(self, narrowed, level):
-        from tta_backend.preprocessing.level_resolver import resolve_level
+        from tta_backend.domain.aggregation.level_resolver import resolve_level
 
         return resolve_level(narrowed, "lev", level)
 
@@ -411,7 +405,7 @@ class WorkingOnProductsBeyondTheOneItWasBuiltAgainstTests(unittest.TestCase):
         """The Architectural Constraint end to end on a coordinate-bearing
         dimension: whatever ``selector_value`` says must make the EXISTING
         ``_select_dim_nearest`` land on the layer the resolver chose."""
-        from tta_backend.utils.plotting import _select_dim_nearest
+        from tta_backend.domain.masking.dimensions import _select_dim_nearest
 
         narrowed = _merra_shaped({"units": "hPa", "long_name": "vertical level"}, _MERRA_LEV_HPA)
 
@@ -461,7 +455,7 @@ class RefusingAnAxisWhoseScaleIsUnknownTests(unittest.TestCase):
         is 10..1010 hPa -- a whole atmosphere -- and a 50 hPa request is 5 kPa,
         which is layer 1. Before the fix it answered layer 3 (50 kPa = 500 hPa),
         off by a factor of ten and disclosed as unanimous."""
-        from tta_backend.preprocessing.level_resolver import resolve_level
+        from tta_backend.domain.aggregation.level_resolver import resolve_level
 
         narrowed = self._kpa_axis([1.0, 5.0, 20.0, 50.0, 85.0, 101.0])
 
@@ -477,7 +471,7 @@ class RefusingAnAxisWhoseScaleIsUnknownTests(unittest.TestCase):
         pressure while carrying a unit no table knows. Guessing parity there is
         the factor-of-ten bug; refuse instead."""
         from tta_backend.earthdata_mcp.results import MCPToolError
-        from tta_backend.preprocessing.level_resolver import resolve_level
+        from tta_backend.domain.aggregation.level_resolver import resolve_level
 
         narrowed = self._kpa_axis([1.0, 5.0, 20.0, 50.0, 85.0, 101.0])
         narrowed = narrowed.assign_coords(p=(
@@ -494,15 +488,15 @@ class RefusingAnAxisWhoseScaleIsUnknownTests(unittest.TestCase):
         """Two hand-maintained vocabularies that must agree. A unit added to
         the classifier but not the converter is not a crash -- it is a silently
         unconverted comparison, which is the bug above."""
-        from tta_backend.preprocessing.level_resolver import _TO_CANONICAL
-        from tta_backend.utils.geo_utils import ALTITUDE_UNITS, PRESSURE_UNITS
+        from tta_backend.domain.aggregation.level_resolver import _TO_CANONICAL
+        from tta_backend.domain.geo import ALTITUDE_UNITS, PRESSURE_UNITS
 
         for kind, vocabulary in (("pressure", PRESSURE_UNITS), ("altitude", ALTITUDE_UNITS)):
             with self.subTest(kind=kind):
                 self.assertEqual(
                     {unit.lower() for unit in vocabulary},
                     set(_TO_CANONICAL[kind]),
-                    f"{kind} units known to geo_utils and to the converter have drifted",
+                    f"{kind} units known to domain.geo and to the converter have drifted",
                 )
 
 
@@ -521,7 +515,7 @@ class RefusingALevelThatCannotHonestlyBeCalledOneTests(unittest.TestCase):
     """
 
     def _resolve(self, level, columns):
-        from tta_backend.preprocessing.level_resolver import resolve_level
+        from tta_backend.domain.aggregation.level_resolver import resolve_level
 
         return resolve_level(_narrowed_profile(column_pressures=columns), "layer", level)
 
@@ -537,7 +531,7 @@ class RefusingALevelThatCannotHonestlyBeCalledOneTests(unittest.TestCase):
         the 75 deg row cos(75) = 0.259, so the equator row's layer must come back
         as ~79% of the region rather than 50%.
         """
-        from tta_backend.preprocessing.level_resolver import resolve_level
+        from tta_backend.domain.aggregation.level_resolver import resolve_level
 
         narrowed = _by_latitude([MEASURED_PRESSURE_HPA, _shifted(MEASURED_PRESSURE_HPA, 1)])
 
@@ -596,182 +590,6 @@ class RefusingALevelThatCannotHonestlyBeCalledOneTests(unittest.TestCase):
         self.assertIn("33", payload["message"] + payload.get("suggestion", ""))
 
 
-
-@unittest.skipIf(
-    any(importlib.util.find_spec(name) is None for name in REQUIRED_MODULES),
-    "satellite tools factory test dependencies are not installed",
-)
-class AskingPlotSingularForAPhysicalLevelTests(unittest.IsolatedAsyncioTestCase):
-    """Level resolution must match direct layer selection.
-
-    Physical-level resolution must be *semantically equivalent* to direct layer
-    selection: the resolver computes an index, and that index goes through the
-    existing selection path. Two ways of asking for the same layer that
-    disagreed about what they were built from would leave a researcher
-    comparing results across tools with no way to see why.
-    """
-
-    async def asyncSetUp(self):
-        from fake_earthdata_mcp import HandleVolume, build_fake_mcp, FakeEarthdataMCPServer
-        from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
-        from tta_backend.config.settings import Settings
-
-        self._tmpdir = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmpdir.cleanup)
-        self.volume = HandleVolume(self._tmpdir.name)
-        server = FakeEarthdataMCPServer(build_fake_mcp({
-            "export_result": self.volume.export_result,
-            "rematerialize": self.volume.rematerialize,
-            "get_retrieval_status": self.volume.get_retrieval_status,
-        }))
-        server.start()
-        self.addCleanup(server.stop)
-        settings = Settings(earthdata_mcp_url=server.url, earthdata_mcp_token=None)
-        self.mcp_tools = await load_raw_mcp_tools(settings)
-        self.volume.add_zarr("obs_profile", self._make_dataset)
-
-    @staticmethod
-    def _make_dataset():
-        """A layered ozone field on a real-shaped grid, carrying its two
-        per-pixel vertical axes as CF auxiliary coordinates -- TEMPO_O3PROF's
-        actual structure, with the spike's measured axis values."""
-        import numpy as np
-        import xarray as xr
-
-        n_time, n_lat, n_lon, n_layers = 2, 3, 4, len(MEASURED_PRESSURE_HPA)
-        shape = (n_time, n_lat, n_lon, n_layers)
-        # A value that identifies its own layer, so a wrong selection is
-        # visible in the plotted numbers rather than only in the metadata.
-        values = np.broadcast_to(
-            np.arange(n_layers, dtype="float64") * 10.0, shape,
-        ).copy()
-        pressure = np.broadcast_to(np.asarray(MEASURED_PRESSURE_HPA), shape).copy()
-        altitude = np.broadcast_to(np.asarray(MEASURED_ALTITUDE_KM), shape).copy()
-        dims = ("time", "lat", "lon", "layer")
-        return xr.Dataset(
-            {"ozone_profile": (dims, values, {"units": "DU"})},
-            coords={
-                "time": np.array(["2025-10-01T12", "2025-10-01T13"], dtype="datetime64[ns]"),
-                "lat": [39.0, 40.0, 41.0],
-                "lon": [-76.0, -75.0, -74.0, -73.0],
-                "ozone_profile_pressure": (dims, pressure, {"units": "hPa"}),
-                "ozone_profile_altitude": (dims, altitude, {"units": "km"}),
-            },
-        )
-
-    def _tool(self, name):
-        from tta_backend.tools.satellite_tools.factory import build_satellite_tools
-
-        return {t.name: t for t in build_satellite_tools(self.mcp_tools)}[name]
-
-    async def _plot(self, **kwargs):
-        emitted = {}
-        plot_singular = self._tool("plot_singular")
-        with patch(
-            "tta_backend.tools.satellite_tools.plot_tools.emit_chart",
-            lambda payload: emitted.update(payload=payload),
-        ):
-            result = await plot_singular.ainvoke({
-                "handle": "obs_profile", "location": "global", **kwargs,
-            })
-        return json.loads(result), emitted.get("payload")
-
-    async def test_a_physical_level_produces_the_same_artifact_as_the_layer_index(self):
-        """The Architectural Constraint, asserted: same values, same statistics,
-        same granule count, same date range."""
-        by_level, level_payload = await self._plot(level="500 hPa")
-        by_index, index_payload = await self._plot(dimension="layer", dimension_value=21)
-
-        self.assertNotIn("error", by_level, by_level)
-        self.assertNotIn("error", by_index, by_index)
-        self.assertEqual(level_payload["values"], index_payload["values"])
-        self.assertEqual(
-            level_payload["aggregation_meta"]["n_granules"],
-            index_payload["aggregation_meta"]["n_granules"],
-        )
-        self.assertEqual(
-            level_payload["provenance"]["granule_dates"],
-            index_payload["provenance"]["granule_dates"],
-        )
-        self.assertEqual(
-            level_payload["provenance"]["start_date"],
-            index_payload["provenance"]["start_date"],
-        )
-
-    async def test_the_plotted_values_are_the_requested_layers(self):
-        """Each layer carries its own index x 10, so selecting 500 hPa (layer
-        21) must plot 210 -- not a mean over layers, and not layer 21 of some
-        other ordering."""
-        _, payload = await self._plot(level="500 hPa")
-
-        flat = [v for row in payload["values"] for v in row if v is not None]
-        self.assertTrue(flat)
-        self.assertTrue(all(v == 210.0 for v in flat), sorted(set(flat)))
-
-    async def test_the_level_disclosure_reaches_provenance(self):
-        """Dominance, runner-up, margin and level error are what let a
-        reader judge whether this map would have looked different done
-        properly. They belong with the result, not in a log line."""
-        _, payload = await self._plot(level="850 hPa")
-
-        disclosure = payload["provenance"]["level_resolution"]
-        self.assertEqual(disclosure["index"], 23)
-        self.assertEqual(disclosure["kind"], "pressure")
-        self.assertEqual(disclosure["units"], "hPa")
-        self.assertAlmostEqual(disclosure["requested"], 850.0)
-        self.assertAlmostEqual(disclosure["resolved_level"], 896.0633, places=3)
-        self.assertAlmostEqual(disclosure["level_error"], 46.0633, places=3)
-        self.assertEqual(disclosure["dominant_fraction"], 1.0)
-
-    async def test_an_unparseable_level_is_refused_before_any_data_is_reduced(self):
-        by_level, _ = await self._plot(level="500")
-
-        self.assertIn("error", by_level)
-
-    async def test_asking_for_a_level_on_a_product_with_no_vertical_axis_is_refused(self):
-        import xarray as xr
-
-        self.volume.add_zarr("obs_flat", lambda: xr.Dataset(
-            {"no2": (("lat", "lon"), [[1.0, 2.0], [3.0, 4.0]], {"units": "mol/m^2"})},
-            coords={"lat": [10.0, 20.0], "lon": [30.0, 40.0]},
-        ))
-        emitted = {}
-        plot_singular = self._tool("plot_singular")
-        with patch(
-            "tta_backend.tools.satellite_tools.plot_tools.emit_chart",
-            lambda payload: emitted.update(payload=payload),
-        ):
-            result = await plot_singular.ainvoke({
-                "handle": "obs_flat", "location": "global", "level": "500 hPa",
-            })
-
-        self.assertIn("error", json.loads(result))
-
-    async def test_giving_both_a_level_and_a_dimension_value_is_refused(self):
-        """They are different requests -- 'level' names a physical level,
-        'dimension_value' names a coordinate value or an index. Silently
-        preferring one would overload the two parameters."""
-        result, _ = await self._plot(level="500 hPa", dimension="layer", dimension_value=21)
-
-        error = result["error"]
-        self.assertIn("level", error["message"])
-        self.assertIn("dimension_value", error["message"])
-
-    async def test_a_level_outside_the_products_range_is_refused_end_to_end(self):
-        """The refusal has to survive the whole tool path, not just the
-        resolver -- an edge snap here is a plausible-looking map."""
-        result, _ = await self._plot(level="2000 hPa")
-
-        self.assertIn("error", result)
-
-    async def test_an_ordinary_map_carries_no_level_disclosure(self):
-        """A chart that never resolved a physical level must not grow an empty
-        level section; the Metadata tab keys its whole block off its absence."""
-        _, payload = await self._plot(dimension="layer", dimension_value=21)
-
-        self.assertNotIn("level_resolution", payload["provenance"])
-
-
 class MeasuringTheAnalyzedRegionAndNotItsBoundingBoxTests(unittest.TestCase):
     """Level statistics must use the analyzed region, not its bounding box.
 
@@ -816,7 +634,7 @@ class MeasuringTheAnalyzedRegionAndNotItsBoundingBoxTests(unittest.TestCase):
         the bounding box the axis runs 550-800 hPa, and an 850 hPa request was
         refused as out of range -- a refusal caused entirely by pixels that are
         not in the region."""
-        from tta_backend.preprocessing.level_resolver import resolve_level
+        from tta_backend.domain.aggregation.level_resolver import resolve_level
 
         resolution = resolve_level(self._split_region(), "layer", "850 hPa")
 
@@ -827,7 +645,7 @@ class MeasuringTheAnalyzedRegionAndNotItsBoundingBoxTests(unittest.TestCase):
     def test_out_of_region_pixels_do_not_vote_on_dominance(self):
         """The majority rule is the safety mechanism, so the population it
         counts has to be the analyzed region."""
-        from tta_backend.preprocessing.level_resolver import resolve_level
+        from tta_backend.domain.aggregation.level_resolver import resolve_level
 
         resolution = resolve_level(self._split_region(), "layer", "850 hPa")
 
@@ -855,7 +673,7 @@ class ToleratingAnIncompleteVerticalColumnTests(unittest.TestCase):
         )
 
     def test_one_dead_layer_does_not_refuse_a_level_the_others_resolve(self):
-        from tta_backend.preprocessing.level_resolver import resolve_level
+        from tta_backend.domain.aggregation.level_resolver import resolve_level
 
         for dead in (0, 23):
             with self.subTest(dead_layer=dead):
@@ -869,7 +687,7 @@ class ToleratingAnIncompleteVerticalColumnTests(unittest.TestCase):
         import numpy as np
 
         from tta_backend.earthdata_mcp.results import MCPToolError
-        from tta_backend.preprocessing.level_resolver import resolve_level
+        from tta_backend.domain.aggregation.level_resolver import resolve_level
 
         narrowed = _narrowed_profile()
         narrowed = narrowed.assign_coords(ozone_profile_pressure=(
@@ -914,7 +732,7 @@ class RefusingWhenTheAxisScaleIsNotKnowableTests(unittest.TestCase):
 
     def test_an_axis_that_publishes_no_units_is_refused(self):
         from tta_backend.earthdata_mcp.results import MCPToolError
-        from tta_backend.preprocessing.level_resolver import resolve_level
+        from tta_backend.domain.aggregation.level_resolver import resolve_level
 
         with self.assertRaises(MCPToolError) as caught:
             resolve_level(self._pascal_axis({"standard_name": "air_pressure"}), "layer", "500 hPa")
@@ -923,7 +741,7 @@ class RefusingWhenTheAxisScaleIsNotKnowableTests(unittest.TestCase):
 
     def test_an_axis_with_blank_units_is_refused_too(self):
         from tta_backend.earthdata_mcp.results import MCPToolError
-        from tta_backend.preprocessing.level_resolver import resolve_level
+        from tta_backend.domain.aggregation.level_resolver import resolve_level
 
         with self.assertRaises(MCPToolError):
             resolve_level(
@@ -951,7 +769,7 @@ class ARequestThatTheProductCannotActuallyResolveTests(unittest.TestCase):
         0.98. Any refusal threshold would be an invented number in that narrow
         band.
         The honest artifact here is the number."""
-        from tta_backend.preprocessing.level_resolver import resolve_level
+        from tta_backend.domain.aggregation.level_resolver import resolve_level
 
         resolution = resolve_level(_narrowed_profile(), "layer", "138 hPa")
 
@@ -961,7 +779,7 @@ class ARequestThatTheProductCannotActuallyResolveTests(unittest.TestCase):
     def test_the_prds_worked_example_still_resolves(self):
         """300 hPa -> layer 19, 40 hPa away: the honest artifact is a number
         rather than a refusal, so a level-error gate must not break it."""
-        from tta_backend.preprocessing.level_resolver import resolve_level
+        from tta_backend.domain.aggregation.level_resolver import resolve_level
 
         resolution = resolve_level(_narrowed_profile(), "layer", "300 hPa")
 
@@ -969,7 +787,7 @@ class ARequestThatTheProductCannotActuallyResolveTests(unittest.TestCase):
         self.assertLess(resolution.level_error_fraction_of_gap, 0.9)
 
     def test_a_level_close_to_a_real_layer_still_resolves(self):
-        from tta_backend.preprocessing.level_resolver import resolve_level
+        from tta_backend.domain.aggregation.level_resolver import resolve_level
 
         resolution = resolve_level(_narrowed_profile(), "layer", "500 hPa")
 
@@ -979,7 +797,7 @@ class ARequestThatTheProductCannotActuallyResolveTests(unittest.TestCase):
         """A bare "4.8 hPa" means nothing without knowing the layers are ~140
         hPa apart there. The normalized figure is what makes it readable, and it
         is what the refusal is gated on."""
-        from tta_backend.preprocessing.level_resolver import resolve_level
+        from tta_backend.domain.aggregation.level_resolver import resolve_level
 
         resolution = resolve_level(_narrowed_profile(), "layer", "500 hPa")
 
@@ -1029,7 +847,7 @@ class DisclosingHowFarApartThePixelsActuallyAreTests(unittest.TestCase):
         two minority groups pulling the mean in opposite directions so it lands
         somewhere no large group actually is."""
         from tta_backend.earthdata_mcp.results import MCPToolError
-        from tta_backend.preprocessing.level_resolver import resolve_level
+        from tta_backend.domain.aggregation.level_resolver import resolve_level
 
         with self.assertRaises(MCPToolError):
             resolve_level(self._tri_modal(), "layer", "850 hPa")
@@ -1044,7 +862,7 @@ class DisclosingHowFarApartThePixelsActuallyAreTests(unittest.TestCase):
         import xarray as xr
 
         from tta_backend.earthdata_mcp.results import MCPToolError
-        from tta_backend.preprocessing.level_resolver import resolve_level
+        from tta_backend.domain.aggregation.level_resolver import resolve_level
 
         near = list(MEASURED_PRESSURE_HPA)
         far = list(MEASURED_PRESSURE_HPA)
@@ -1076,7 +894,7 @@ class DisclosingHowFarApartThePixelsActuallyAreTests(unittest.TestCase):
         On a product with 100 hPa gaps a layer ranging 260-340 hPa across the
         region still scores ~100%, and "270.9 hPa, 100% agreement" hides it.
         ``_profile_axis_block`` already discloses this for the profile."""
-        from tta_backend.preprocessing.level_resolver import resolve_level
+        from tta_backend.domain.aggregation.level_resolver import resolve_level
 
         resolution = resolve_level(_narrowed_profile(), "layer", "500 hPa")
 
@@ -1084,7 +902,7 @@ class DisclosingHowFarApartThePixelsActuallyAreTests(unittest.TestCase):
 
     def test_a_layer_that_varies_across_the_region_reports_its_spread(self):
 
-        from tta_backend.preprocessing.level_resolver import resolve_level
+        from tta_backend.domain.aggregation.level_resolver import resolve_level
 
         narrowed = _narrowed_profile(column_pressures=[MEASURED_PRESSURE_HPA] * 3)
         axis = narrowed["ozone_profile_pressure"].values.copy()
@@ -1113,7 +931,7 @@ class ReportingTheSampleWithoutMisstatingItTests(unittest.TestCase):
         analyzed pixels" beside a map built from 40 needs its denominator."""
         import numpy as np
 
-        from tta_backend.preprocessing.level_resolver import resolve_level
+        from tta_backend.domain.aggregation.level_resolver import resolve_level
 
         narrowed = _narrowed_profile(column_pressures=[MEASURED_PRESSURE_HPA] * 4)
         axis = narrowed["ozone_profile_pressure"].values.copy()
@@ -1128,7 +946,7 @@ class ReportingTheSampleWithoutMisstatingItTests(unittest.TestCase):
         self.assertLess(resolution.excluded_fraction, 1.0)
 
     def test_a_complete_region_excludes_nothing(self):
-        from tta_backend.preprocessing.level_resolver import resolve_level
+        from tta_backend.domain.aggregation.level_resolver import resolve_level
 
         resolution = resolve_level(_narrowed_profile(), "layer", "500 hPa")
 

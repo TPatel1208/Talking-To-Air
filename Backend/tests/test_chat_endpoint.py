@@ -12,6 +12,13 @@ if TESTS_DIR not in sys.path:
     sys.path.insert(0, TESTS_DIR)
 
 import auth_helpers  # noqa: E402 -- needs the TESTS_DIR insert above
+from harness_chat_helpers import (  # noqa: E402
+    MemoryCharts,
+    MemoryTranscripts,
+    PlaybackSupervisor,
+    make_chat,
+    memory_repositories,
+)
 
 
 _REQUIRED = ["fastapi", "httpx", "jwt", "langchain", "langgraph"]
@@ -51,15 +58,20 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         ``CHAT_DETACHED_TURNS_ENABLED=0`` restores, and a rollback that
         restores something untested is not a rollback.
         """
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
 
         self.enterContext(patch.dict(os.environ, {"CHAT_DETACHED_TURNS_ENABLED": "0"}))
         get_settings.cache_clear()
         self.addCleanup(get_settings.cache_clear)
 
-        async def fake_stream_response(agent, message, thread_id, **kwargs):
-            yield "status", {"message": "Downloading satellite granules...", "stage": "progress", "detail": 40}
-            yield "text", "hello"
+        import tempfile
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.api.app.state.agent = make_chat(PlaybackSupervisor(
+            ("status", {"message": "Downloading satellite granules...", "stage": "progress", "detail": 40}),
+            ("text", "hello"),
+        ), tmp.name)
 
         async def fake_save_session_metadata_once(thread_id, first_message, user_id):
             fake_save_session_metadata_once.called_with = (thread_id, first_message, user_id)
@@ -68,7 +80,8 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         auth_patches = self._auth_patch()
         with auth_patches, \
              patch.object(self.api, "save_session_metadata_once", fake_save_session_metadata_once), \
-             patch("tta_backend.services.chat_stream_service.stream_response", fake_stream_response):
+             patch.object(self.api, "mark_session_activity", AsyncMock()), \
+             memory_repositories(MemoryTranscripts(), MemoryCharts()):
             async with self.httpx.AsyncClient(
                 transport=transport,
                 base_url="http://testserver",
@@ -87,18 +100,12 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fake_save_session_metadata_once.called_with[2], self.user.id)
 
     async def test_session_flow_lists_history_and_deletes(self):
-        class FakeAgent:
-            async def aget_state(self, config):
-                return SimpleNamespace(
-                    values={
-                        "messages": [
-                            SimpleNamespace(type="human", content="hi"),
-                            SimpleNamespace(type="ai", content="hello", tool_calls=[]),
-                        ]
-                    }
-                )
+        from tta_backend.models.transcript import TranscriptTurn
 
-        self.api.app.state.agent = FakeAgent()
+        transcripts = MemoryTranscripts()
+        transcripts.turns = [TranscriptTurn(
+            thread_id="thread-1", user_id=self.user.id, turn_index=0, user_text="hi", answer_text="hello",
+        )]
         transport = self.httpx.ASGITransport(app=self.api.app)
         async def fake_list_sessions(user_id, *, limit, cursor):
             fake_list_sessions.called_with = user_id
@@ -120,7 +127,8 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         with auth_patches, \
              patch.object(self.api.session_repository, "list_sessions", fake_list_sessions), \
              patch.object(self.api.session_repository, "delete_session", fake_delete_session), \
-             patch.object(self.api, "session_belongs_to_user", fake_session_belongs_to_user):
+             patch.object(self.api, "session_belongs_to_user", fake_session_belongs_to_user), \
+             memory_repositories(transcripts, MemoryCharts()):
             async with self.httpx.AsyncClient(
                 transport=transport,
                 base_url="http://testserver",
@@ -142,7 +150,10 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
             history.json()["messages"],
             [
                 {"role": "user", "content": "hi", "toolCalls": []},
-                {"role": "assistant", "content": "hello", "toolCalls": [], "charts": [], "artifacts": []},
+                {
+                    "role": "assistant", "content": "hello", "toolCalls": [], "charts": [], "artifacts": [],
+                    "label": None, "results": [], "suggested_followups": [],
+                },
             ],
         )
         self.assertEqual(deleted.json(), {"deleted": "thread-1"})
@@ -208,11 +219,8 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
     async def test_session_endpoint_500s_never_leak_the_exception_text(self):
         # Internal error text (driver messages, paths) must go to the
         # logs, not the client — every 500 body carries the generic detail.
-        class FakeAgent:
-            async def aget_state(self, config):
-                raise RuntimeError("secret driver path C:\\db\\creds")
-
-        self.api.app.state.agent = FakeAgent()
+        async def raising_list_turns(thread_id, user_id):
+            raise RuntimeError("secret driver path C:\\db\\creds")
 
         async def raising_list_sessions(user_id, *, limit, cursor):
             raise RuntimeError("secret driver path C:\\db\\creds")
@@ -228,6 +236,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         with auth_patches, \
              patch.object(self.api.session_repository, "list_sessions", raising_list_sessions), \
              patch.object(self.api.session_repository, "delete_session", raising_delete_session), \
+             patch("tta_backend.repositories.transcript_repository.list_turns", raising_list_turns), \
              patch.object(self.api, "session_belongs_to_user", fake_session_belongs_to_user):
             async with self.httpx.AsyncClient(
                 transport=transport,
@@ -354,10 +363,17 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         # every other MCP-backed endpoint — never fail inside the
         # StreamingResponse generator after a 200 has been committed.
         # No earthdata_mcp_manager on app.state (lifespan never ran here),
-        # which reads as "connecting" — not ready.
+        # which reads as "connecting" — not ready. The chart is the user's and
+        # no harness run drew it, so its export needs the data service.
+        payload = {"chart_id": "chart-1", "title": "TEMPO over Texas", "export": {"type": "heatmap"},
+                   "user_id": self.user.id}
+
+        async def fake_get_chart(chart_id):
+            return payload
+
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
-        with auth_patches:
+        with auth_patches, patch.object(self.api.chart_service, "get_chart", fake_get_chart):
             async with self.httpx.AsyncClient(
                 transport=transport,
                 base_url="http://testserver",
@@ -476,10 +492,17 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_chart_netcdf_export_503s_with_the_taxonomy_body_when_the_mcp_is_not_ready(self):
         # export.nc must speak the shared error taxonomy like every other
-        # MCP-backed endpoint, not a bespoke 503.
+        # MCP-backed endpoint, not a bespoke 503. The chart is the user's and
+        # no harness run drew it, so its conversion needs the data service.
+        payload = {"chart_id": "chart-1", "title": "TEMPO over Texas",
+                   "metadata": {"source_handles": ["obs_1"]}, "user_id": self.user.id}
+
+        async def fake_get_chart(chart_id):
+            return payload
+
         transport = self.httpx.ASGITransport(app=self.api.app)
         auth_patches = self._auth_patch()
-        with auth_patches:
+        with auth_patches, patch.object(self.api.chart_service, "get_chart", fake_get_chart):
             async with self.httpx.AsyncClient(
                 transport=transport,
                 base_url="http://testserver",
@@ -652,14 +675,14 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         value raster are what a live chart stores."""
         import numpy as np
 
-        from tta_backend.tools.satellite_tools import plot_tools
+        from tta_backend.services import overlay_store
         from tta_backend.utils.colormaps import resolve
 
         lats = np.linspace(30.0, 33.0, 12)
         lons = np.linspace(-100.0, -96.0, 16)
         values = np.linspace(2.0, 9.0, lats.size * lons.size, dtype=np.float32).reshape(lats.size, lons.size)
         overlay = {"bounds": [-100, 30, -96, 33]}
-        overlay.update(plot_tools._render_and_store_overlay(lats, lons, values, resolve("NO2").lut, 3.0, 8.0))
+        overlay.update(overlay_store.render_and_store(lats, lons, values, resolve("NO2").lut, 3.0, 8.0))
         node = {"overlay": overlay, "colormap": {"name": "no2_omi"}}
         if panels:
             return {"chart_id": "chart-1", "type": "heatmap_multi", "panels": [node], "user_id": self.user.id}
@@ -792,7 +815,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         """
         import tempfile
 
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
         from tta_backend.services.frame_store import store_frame_stack
         from tta_backend.services.open_handle import OPEN_PIPELINE_VERSION
 
@@ -889,7 +912,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         payload, _stack = self._frame_chart()
         import shutil
 
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
 
         shutil.rmtree(get_settings().frame_store_dir)
 
@@ -1050,7 +1073,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         """
         import shutil
 
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
 
         payload, _stack = self._frame_chart(planes=True)
         evicted = payload["frames"]["planes"]["max"]["_key"]
@@ -1326,7 +1349,6 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         for name in [
             "http_requests_total",
             "http_request_duration_seconds",
-            "agent_requests_total",
             "harmony_fetch_duration_seconds",
             "harmony_timeouts_total",
             "cache_hits_total",
@@ -1335,20 +1357,40 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         ]:
             self.assertIn(name, response.text)
 
-    async def test_chat_validation_happens_before_streaming(self):
-        async def fake_stream_response(agent, message, thread_id, **kwargs):
-            fake_stream_response.called = True
-            yield "text", "should not run"
+    async def test_a_chat_request_without_a_signed_in_user_is_refused_before_any_run(self):
+        import tempfile
 
-        fake_stream_response.called = False
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        supervisor = PlaybackSupervisor(("text", "should not run"))
+        self.api.app.state.agent = make_chat(supervisor, tmp.name)
+        saved = AsyncMock()
+        transport = self.httpx.ASGITransport(app=self.api.app)
+
+        with self._auth_patch(), patch.object(self.api, "save_session_metadata_once", saved):
+            async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                anonymous = await client.post("/chat", json={"message": "hi"})
+                forged = await client.post("/chat", json={"message": "hi"}, headers={"Authorization": "Bearer not-a-token"})
+
+        self.assertEqual((anonymous.status_code, forged.status_code), (401, 401))
+        self.assertEqual(supervisor.messages, [])
+        self.assertEqual(supervisor.contexts, [])
+        saved.assert_not_awaited()
+
+    async def test_chat_validation_happens_before_streaming(self):
+        import tempfile
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        supervisor = PlaybackSupervisor(("text", "should not run"))
+        self.api.app.state.agent = make_chat(supervisor, tmp.name)
         transport = self.httpx.ASGITransport(app=self.api.app)
         async def fake_save_session_metadata_once(thread_id, first_message, user_id):
             pass
 
         auth_patches = self._auth_patch()
         with auth_patches, \
-             patch.object(self.api, "save_session_metadata_once", fake_save_session_metadata_once), \
-             patch("tta_backend.services.chat_stream_service.stream_response", fake_stream_response):
+             patch.object(self.api, "save_session_metadata_once", fake_save_session_metadata_once):
             async with self.httpx.AsyncClient(
                 transport=transport,
                 base_url="http://testserver",
@@ -1368,7 +1410,7 @@ class ChatEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(empty.status_code, 422)
         self.assertEqual(long_message.status_code, 422)
         self.assertEqual(bad_thread.status_code, 422)
-        self.assertFalse(fake_stream_response.called)
+        self.assertEqual(supervisor.messages, [])
 
 
 if __name__ == "__main__":

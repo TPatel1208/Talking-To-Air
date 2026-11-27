@@ -84,6 +84,20 @@ class TheExtractCacheIsBoundedBySizeTests(unittest.TestCase):
             "extract up to 8 GiB and nothing counts the total.",
         )
 
+    def test_the_entry_used_last_survives_a_clock_that_never_moves(self):
+        """Two uses stamped in the same clock tick keep their order, so the
+        size pass evicts the entry used first."""
+        from tta_backend.services.open_handle import _prune_extract_cache, _stamp_entry
+
+        cold = _entry(self.root, "cold", 400)
+        hot = _entry(self.root, "hot", 400)
+        with patch("time.time_ns", return_value=time.time_ns()):
+            _stamp_entry(cold)
+            _stamp_entry(hot)
+            _prune_extract_cache(self.root, ttl_seconds=3600.0, max_bytes=500)
+
+        self.assertEqual(_names(self.root), {"hot"})
+
     def test_a_cache_already_under_the_cap_is_left_alone(self):
         from tta_backend.services.open_handle import _prune_extract_cache
 

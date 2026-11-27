@@ -8,6 +8,7 @@ import importlib.util
 import os
 import sys
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -50,7 +51,7 @@ class StreamingRequestMetricsTests(unittest.IsolatedAsyncioTestCase):
         test_chat_detached_turns.py. This one keeps the property pinned for
         ``CHAT_DETACHED_TURNS_ENABLED=0``, where the POST streams again.
         """
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
 
         self.enterContext(patch.dict(os.environ, {"CHAT_DETACHED_TURNS_ENABLED": "0"}))
         get_settings.cache_clear()
@@ -58,9 +59,7 @@ class StreamingRequestMetricsTests(unittest.IsolatedAsyncioTestCase):
 
         sleep_seconds = 0.3
 
-        async def fake_stream_chat_events(
-            agent, ground_agent, satellite_agent, message, thread_id, user_id, request_id,
-        ):
+        async def fake_stream_chat_events(message, thread_id, user_id, request_id):
             # An early chunk (like a real status event) arrives almost
             # immediately — GZipMiddleware only buffers headers until the
             # *first* body chunk, so a fixture that sleeps before its only
@@ -84,7 +83,7 @@ class StreamingRequestMetricsTests(unittest.IsolatedAsyncioTestCase):
         auth_patches = self._auth_patch()
         with auth_patches, \
              patch.object(self.api, "save_session_metadata_once", fake_save_session_metadata_once), \
-             patch.object(self.api.chat_stream_service, "stream_chat_events", fake_stream_chat_events), \
+             patch.object(self.api.app.state, "agent", SimpleNamespace(stream_chat_events=fake_stream_chat_events)), \
              patch.object(self.api, "observe_http_request", fake_observe_http_request):
             async with self.httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
                 response = await client.post("/chat", json={"message": "hi"}, headers=self.auth_headers)

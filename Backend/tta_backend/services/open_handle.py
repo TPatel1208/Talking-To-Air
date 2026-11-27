@@ -21,11 +21,12 @@ from urllib.request import url2pathname
 
 from langchain_core.tools import BaseTool
 
-from tta_backend.config.settings import get_settings
+from tta_backend.infrastructure.access_clock import stamp_access
+from tta_backend.infrastructure.settings import get_settings
 from tta_backend.config.workflow_stages import STAGE_OPEN
 from tta_backend.earthdata_mcp.results import CATEGORY_TOO_LARGE, MCPToolError, parse_tool_result
 from tta_backend.services.retrieval_composites import await_retrieval
-from tta_backend.utils.phase_timing import phase_timer
+from tta_backend.infrastructure.phase_timing import phase_timer
 from tta_backend.utils.streaming import emit_status
 
 logger = logging.getLogger(__name__)
@@ -69,6 +70,10 @@ _hdf5_open_lock = threading.Lock()
 
 class OpenHandleError(RuntimeError):
     """Raised when a handle cannot be opened, even after one rematerialize attempt."""
+
+
+class HandleGoneError(OpenHandleError):
+    """Raised when a handle's data is gone and rematerializing it failed or was refused."""
 
 
 class UnreadableExportError(OpenHandleError):
@@ -233,17 +238,17 @@ async def _recover(handle: str, tools: dict[str, BaseTool]) -> dict[str, Any]:
     remat_raw = await tools["rematerialize"].ainvoke({"handle": handle})
     remat = parse_tool_result(remat_raw)
     if remat.get("status") == "not_found":
-        raise OpenHandleError(remat.get("message") or f"Handle '{handle}' not found and cannot be rematerialized.")
+        raise HandleGoneError(remat.get("message") or f"Handle '{handle}' not found and cannot be rematerialized.")
 
     job_handle = remat.get("job_handle")
     if job_handle:
         status = await await_retrieval(job_handle, tools)
         if status.get("status") != "ready":
-            raise OpenHandleError(status.get("message") or f"Rematerializing handle '{handle}' failed.")
+            raise HandleGoneError(status.get("message") or f"Rematerializing handle '{handle}' failed.")
 
     second_export = await _export(handle, tools)
     if second_export.get("status") != "ready":
-        raise OpenHandleError(
+        raise HandleGoneError(
             second_export.get("message") or f"Handle '{handle}' still not ready after rematerialize."
         )
     return second_export
@@ -338,7 +343,7 @@ def _serve_from_cube_or_open(export: dict[str, Any], timing: dict[str, Any] | No
     plumbing changes don't spuriously invalidate every cube.
     """
     from tta_backend.services.cube_cache import lookup, note_handle, reconcile_handle
-    from tta_backend.utils.metrics import record_cache_hit, record_cache_miss
+    from tta_backend.infrastructure.metrics import record_cache_hit, record_cache_miss
 
     identity = _cube_identity(export)
     if identity is None:
@@ -835,7 +840,7 @@ def _extract_bundle_cached(zf: Any, path: str, names: list[str]) -> tuple[str, b
     final_dir = os.path.join(root, key)
     marker = os.path.join(final_dir, _EXTRACT_COMPLETE_MARKER)
     if os.path.exists(marker):
-        os.utime(final_dir, None)  # keep a hot entry out of the pruner's reach
+        _stamp_entry(final_dir)  # keep a hot entry out of the pruner's reach
         return final_dir, True
 
     staging = tempfile.mkdtemp(prefix=f"staging-{key}-", dir=root)
@@ -844,6 +849,7 @@ def _extract_bundle_cached(zf: Any, path: str, names: list[str]) -> tuple[str, b
         with open(os.path.join(staging, _EXTRACT_COMPLETE_MARKER), "w"):
             pass
         os.rename(staging, final_dir)
+        _stamp_entry(final_dir)
     except OSError:
         shutil.rmtree(staging, ignore_errors=True)
         if os.path.exists(marker):
@@ -905,6 +911,14 @@ def _entry_size_bytes(path: str) -> int:
     return total
 
 
+def _stamp_entry(path: str) -> None:
+    """Record a use of an extract-cache entry on the shared access clock."""
+    try:
+        stamp_access(path)
+    except OSError:
+        pass
+
+
 def _prune_extract_cache(
     root: str,
     ttl_seconds: float = _EXTRACT_CACHE_TTL_SECONDS,
@@ -935,21 +949,21 @@ def _prune_extract_cache(
     if max_bytes is None:
         max_bytes = get_settings().bundle_extract_cache_max_bytes
 
-    cutoff = time.time() - ttl_seconds
+    cutoff_ns = time.time_ns() - int(ttl_seconds * 1_000_000_000)
     try:
         entries = list(os.scandir(root))
     except OSError:
         return
 
-    survivors: list[tuple[float, int, str]] = []
+    survivors: list[tuple[int, int, str]] = []
     for entry in entries:
         try:
             if not entry.is_dir(follow_symlinks=False):
                 continue
-            mtime = entry.stat(follow_symlinks=False).st_mtime
+            mtime = entry.stat(follow_symlinks=False).st_mtime_ns
             if is_pinned(entry.path):
                 continue  # pinned entries are neither swept nor counted against the cap
-            if mtime < cutoff:
+            if mtime < cutoff_ns:
                 shutil.rmtree(entry.path, ignore_errors=True)
                 continue
             survivors.append((mtime, _entry_size_bytes(entry.path), entry.path))
@@ -1136,7 +1150,7 @@ def _strip_concat_unsafe_coord_attrs(ds: Any) -> Any:
     nothing else. Applied to EVERY coordinate — as it was until 2026-08-08 —
     it took ``hPa`` off TEMPO_O3PROF's pressure axis and ``km`` off its
     altitude axis. Units are precisely how a vertical axis is identified
-    (``geo_utils.vertical_axis_kind``), so the profile came back with 24 values
+    (``domain.geo.vertical_axis_kind``), so the profile came back with 24 values
     and nothing to plot them against: no error, no empty result, just a missing
     axis. And only on a multi-granule bundle, since a single-member bundle
     returns before this runs — which is why it survived a full synthetic suite
@@ -1292,7 +1306,7 @@ def _promote_lat_lon_coords(ds: Any) -> Any:
 
     Identifies lat/lon by CF metadata (standard_name/units) first, so
     unusual variable names are still promoted."""
-    from tta_backend.utils.geo_utils import identify_lat, identify_lon
+    from tta_backend.domain.geo import identify_lat, identify_lon
 
     identified = [identify_lat(ds), identify_lon(ds)]
     to_promote = [name for name in identified if name in ds.data_vars]
@@ -1332,4 +1346,4 @@ _PIPELINE_SOURCE_FUNCTIONS = (
 #
 # Cache wiring lives outside these functions (in _open_by_media_type) so
 # plumbing changes don't move this hash.
-OPEN_PIPELINE_SOURCE_FINGERPRINT = "2f9c99359e6db402366e0923d5e33389da58b03a59c0a86ccb7f51cc02b38ecc"
+OPEN_PIPELINE_SOURCE_FINGERPRINT = "5403d94e3685946d2085933b10ed460727f9baa6b8fd45cf1abb60e0798c6eaf"

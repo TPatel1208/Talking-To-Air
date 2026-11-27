@@ -17,7 +17,7 @@ REQUIRED_KWARGS = {
 
 class ConfigLoggingTests(unittest.TestCase):
     def setUp(self):
-        from tta_backend.config import settings
+        from tta_backend.infrastructure import settings
 
         settings.get_settings.cache_clear()
         # get_settings() calls load_dotenv() on every cache miss, which reads
@@ -29,24 +29,23 @@ class ConfigLoggingTests(unittest.TestCase):
         # CLAUDE.md's "Optional deps / .env bleed" note). Neutralize it here
         # so these tests assert Settings' own defaults, not the developer's
         # local file.
-        self._load_dotenv_patcher = patch("tta_backend.config.settings.load_dotenv")
+        self._load_dotenv_patcher = patch("tta_backend.infrastructure.settings.load_dotenv")
         self._load_dotenv_patcher.start()
         self.addCleanup(self._load_dotenv_patcher.stop)
 
     def tearDown(self):
-        from tta_backend.config import settings
+        from tta_backend.infrastructure import settings
 
         settings.get_settings.cache_clear()
 
     def test_settings_loads_defaults_and_validates_required_startup_values(self):
-        from tta_backend.config.settings import Settings, get_settings
+        from tta_backend.infrastructure.settings import Settings, get_settings
 
         with patch.dict(os.environ, {}, clear=True):
             get_settings.cache_clear()
             loaded = get_settings()
 
         self.assertEqual(loaded.llm_model, "gemini-3.7-flash")
-        self.assertEqual(loaded.ground_agent_model, "gemini-3.5-flash-lite")
         self.assertEqual(loaded.data_fetch_mode, "auto")
         self.assertEqual(loaded.harmony_processing_timeout_seconds, 600)
         # Cleared env, so a .env loaded by an earlier test can't change providers.
@@ -56,7 +55,7 @@ class ConfigLoggingTests(unittest.TestCase):
             loaded.validate_startup()
 
     def test_settings_loads_harmony_processing_timeout(self):
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
 
         with patch.dict(os.environ, {"HARMONY_PROCESSING_TIMEOUT_SECONDS": "15"}, clear=True):
             get_settings.cache_clear()
@@ -65,7 +64,7 @@ class ConfigLoggingTests(unittest.TestCase):
         self.assertEqual(loaded.harmony_processing_timeout_seconds, 15)
 
     def test_settings_loads_earthdata_mcp_defaults_and_overrides(self):
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
 
         with patch.dict(os.environ, {}, clear=True):
             get_settings.cache_clear()
@@ -73,30 +72,6 @@ class ConfigLoggingTests(unittest.TestCase):
 
         self.assertEqual(loaded.earthdata_mcp_url, "http://mcp:8765/mcp")
         self.assertIsNone(loaded.earthdata_mcp_token)
-
-    def test_agent_recursion_limit_default_has_headroom_for_a_multi_period_workflow(self):
-        """Regression guard (2026-07-20 AOD wildfire session): the default was
-        25, but a legitimate two-period, multi-day plot workflow (search → AOI →
-        coverage → retrieve → poll → plot, ×2 periods) is ~two supersteps per
-        tool call and runs right into that ceiling, surfacing as an opaque
-        GraphRecursionError. The default must leave room for that real workflow;
-        it stays tunable so a runaway loop can still be capped lower/higher."""
-        from tta_backend.config.settings import get_settings
-
-        with patch.dict(os.environ, {}, clear=True):
-            get_settings.cache_clear()
-            loaded = get_settings()
-
-        self.assertGreaterEqual(loaded.agent_recursion_limit, 40)
-
-    def test_agent_recursion_limit_is_overridable(self):
-        from tta_backend.config.settings import get_settings
-
-        with patch.dict(os.environ, {"AGENT_RECURSION_LIMIT": "60"}, clear=True):
-            get_settings.cache_clear()
-            loaded = get_settings()
-
-        self.assertEqual(loaded.agent_recursion_limit, 60)
 
         with patch.dict(
             os.environ,
@@ -110,7 +85,7 @@ class ConfigLoggingTests(unittest.TestCase):
         self.assertEqual(loaded.earthdata_mcp_token, "secret")
 
     def test_settings_loads_retrieval_gate_defaults_and_overrides(self):
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
 
         with patch.dict(os.environ, {}, clear=True):
             get_settings.cache_clear()
@@ -121,7 +96,7 @@ class ConfigLoggingTests(unittest.TestCase):
         self.assertEqual(loaded.await_retrieval_poll_min_seconds, 2)
         # Capped low on purpose: the backoff's ceiling is also how far behind
         # reality a narrated status can fall once it saturates. See the note on
-        # the field in config/settings.py.
+        # the field in infrastructure/settings.py.
         self.assertEqual(loaded.await_retrieval_poll_max_seconds, 5)
         self.assertEqual(loaded.await_retrieval_timeout_seconds, 900)
 
@@ -146,7 +121,7 @@ class ConfigLoggingTests(unittest.TestCase):
         self.assertEqual(loaded.await_retrieval_timeout_seconds, 60)
 
     def test_settings_loads_bundle_open_gate_default_and_override(self):
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
 
         with patch.dict(os.environ, {}, clear=True):
             get_settings.cache_clear()
@@ -165,25 +140,33 @@ class ConfigLoggingTests(unittest.TestCase):
 
         self.assertEqual(loaded.bundle_open_max_uncompressed_bytes, 1234)
 
-    def test_settings_loads_subagent_trim_token_ceiling_default_and_override(self):
-        from tta_backend.config.settings import get_settings
+    def test_a_stray_shared_epa_credential_in_the_environment_is_ignored(self):
+        """EPA AQS data uses each user's own connector; there is no
+        application-level credential, and settings still load with the old
+        variables set."""
+        from tta_backend.infrastructure.settings import Settings
 
+        with patch.dict(os.environ, {"AQS_API_EMAIL": "ops@lab.edu", "AQS_API_KEY": "shared-key"}, clear=True):
+            loaded = Settings()
+
+        self.assertFalse(hasattr(loaded, "aqs_api_key"))
+        self.assertFalse(hasattr(loaded, "aqs_api_email"))
+        self.assertNotIn("shared-key", repr(loaded))
+
+    def test_the_geocoder_contact_reads_its_own_variable_then_the_old_operator_address(self):
+        from tta_backend.infrastructure.settings import Settings
+
+        with patch.dict(os.environ, {"NOMINATIM_CONTACT_EMAIL": "geo@lab.edu", "AQS_API_EMAIL": "ops@lab.edu"}, clear=True):
+            self.assertEqual(Settings().nominatim_contact_email, "geo@lab.edu")
+        with patch.dict(os.environ, {"AQS_API_EMAIL": "ops@lab.edu"}, clear=True):
+            self.assertEqual(Settings().nominatim_contact_email, "ops@lab.edu")
         with patch.dict(os.environ, {}, clear=True):
-            get_settings.cache_clear()
-            loaded = get_settings()
-
-        self.assertEqual(loaded.subagent_trim_token_ceiling, 20000)
-
-        with patch.dict(os.environ, {"SUBAGENT_TRIM_TOKEN_CEILING": "4000"}, clear=True):
-            get_settings.cache_clear()
-            loaded = get_settings()
-
-        self.assertEqual(loaded.subagent_trim_token_ceiling, 4000)
+            self.assertEqual(Settings().nominatim_contact_email, "your_email@example.com")
 
     def test_settings_loads_earthdata_agent_model_default_and_override(self):
         # Settings() constructed directly (not via get_settings()) so a
         # developer's local .env can't shadow the default being asserted here.
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         with patch.dict(os.environ, {}, clear=True):
             loaded = Settings()
@@ -194,7 +177,7 @@ class ConfigLoggingTests(unittest.TestCase):
         self.assertEqual(loaded.earthdata_agent_model, "some/other-model")
 
     def test_settings_earthdata_agent_model_falls_back_to_legacy_satellite_env_var(self):
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         with patch.dict(os.environ, {"SATELLITE_AGENT_MODEL": "legacy/model"}, clear=True):
             loaded = Settings()
@@ -202,24 +185,22 @@ class ConfigLoggingTests(unittest.TestCase):
         self.assertEqual(loaded.earthdata_agent_model, "legacy/model")
 
     def test_settings_loads_default_agent_providers(self):
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         with patch.dict(os.environ, {}, clear=True):
             loaded = Settings()
 
         self.assertEqual(loaded.supervisor_model_provider, "google")
         self.assertEqual(loaded.earthdata_agent_provider, "google")
-        self.assertEqual(loaded.ground_agent_provider, "google")
 
     def test_settings_loads_agent_provider_overrides(self):
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         with patch.dict(
             os.environ,
             {
                 "SUPERVISOR_MODEL_PROVIDER": "groq",
                 "EARTHDATA_AGENT_PROVIDER": "google",
-                "GROUND_AGENT_PROVIDER": "google",
             },
             clear=True,
         ):
@@ -227,12 +208,11 @@ class ConfigLoggingTests(unittest.TestCase):
 
         self.assertEqual(loaded.supervisor_model_provider, "groq")
         self.assertEqual(loaded.earthdata_agent_provider, "google")
-        self.assertEqual(loaded.ground_agent_provider, "google")
 
     def test_validate_startup_requires_google_key_only_when_a_google_agent_is_configured(self):
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
-        # Default posture: supervisor, earthdata, and ground agent all on google.
+        # Default posture: both model settings on google.
         # Cleared env, so a .env loaded by an earlier test can't change providers.
         with patch.dict(os.environ, {}, clear=True):
             loaded = Settings(db_password="x", **REQUIRED_KWARGS, google_api_key=None, groq_api_key="x")
@@ -247,12 +227,11 @@ class ConfigLoggingTests(unittest.TestCase):
             groq_api_key="x",
             supervisor_model_provider="groq",
             earthdata_agent_provider="groq",
-            ground_agent_provider="groq",
         )
         loaded.validate_startup()
 
     def test_validate_startup_requires_the_supabase_identity_provider(self):
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         # Unconditional, unlike the provider keys. api.py builds the
         # verifier's issuer as f"{supabase_url}/auth/v1" at import, so a None
@@ -282,7 +261,7 @@ class ConfigLoggingTests(unittest.TestCase):
             loaded.validate_startup()
 
     def test_validate_startup_passes_with_the_identity_provider_configured(self):
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         # The other half of the check above: proves the two branches reject a
         # missing value rather than rejecting everything.
@@ -290,15 +269,15 @@ class ConfigLoggingTests(unittest.TestCase):
         loaded.validate_startup()  # must not raise
 
     def test_validate_startup_requires_groq_key_only_when_a_groq_agent_is_configured(self):
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
-        # A groq-configured subagent requires GROQ_API_KEY.
+        # A groq-configured model requires GROQ_API_KEY.
         loaded = Settings(
             db_password="x",
             **REQUIRED_KWARGS,
             google_api_key="x",
             groq_api_key=None,
-            ground_agent_provider="groq",
+            earthdata_agent_provider="groq",
         )
         with self.assertRaisesRegex(RuntimeError, "GROQ_API_KEY"):
             loaded.validate_startup()
@@ -312,7 +291,7 @@ class ConfigLoggingTests(unittest.TestCase):
         is invisible until it 404s on the first call that uses it -- for the
         supervisor, every turn. Nothing in the suite makes a real model call,
         so boot is the only place a typo can be caught before a user finds it."""
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         loaded = Settings(
             db_password="x",
@@ -327,20 +306,20 @@ class ConfigLoggingTests(unittest.TestCase):
         """The gate is opt-in per provider: only providers listed in
         _VETTED_MODELS are checked, so adding one is deliberate rather than
         something that silently starts failing other deployments' boots."""
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         loaded = Settings(
             db_password="x",
             **REQUIRED_KWARGS,
             google_api_key="x",
             groq_api_key="x",
-            ground_agent_provider="groq",
-            ground_agent_model="some-groq-only-model",
+            earthdata_agent_provider="groq",
+            earthdata_agent_model="some-groq-only-model",
         )
         loaded.validate_startup()  # must not raise
 
     def test_validate_startup_rejects_a_malformed_earthdata_mcp_url(self):
-        from tta_backend.config.settings import ConfigurationError, Settings
+        from tta_backend.infrastructure.settings import ConfigurationError, Settings
 
         # A config typo (bad scheme, no host) is a bug to fix at boot, not an
         # outage the connection manager should retry.
@@ -352,7 +331,7 @@ class ConfigLoggingTests(unittest.TestCase):
             loaded.validate_startup()
 
     def test_validate_startup_accepts_a_well_formed_earthdata_mcp_url(self):
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         loaded = Settings(
             db_password="x", **REQUIRED_KWARGS, google_api_key="x", groq_api_key="x",
@@ -361,7 +340,7 @@ class ConfigLoggingTests(unittest.TestCase):
         loaded.validate_startup()  # must not raise
 
     def test_settings_loads_debug_heap_profiling_flag_default_and_override(self):
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
 
         with patch.dict(os.environ, {}, clear=True):
             get_settings.cache_clear()
@@ -376,7 +355,7 @@ class ConfigLoggingTests(unittest.TestCase):
         self.assertTrue(loaded.debug_heap_profiling_enabled)
 
     def test_settings_loads_mcp_call_timeout_and_chat_turn_timeout_defaults(self):
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
 
         with patch.dict(os.environ, {}, clear=True):
             get_settings.cache_clear()
@@ -386,7 +365,7 @@ class ConfigLoggingTests(unittest.TestCase):
         self.assertEqual(loaded.chat_turn_timeout_seconds, 1800)
 
     def test_settings_loads_mcp_call_timeout_and_chat_turn_timeout_from_env(self):
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
 
         with patch.dict(
             os.environ,
@@ -400,7 +379,7 @@ class ConfigLoggingTests(unittest.TestCase):
         self.assertEqual(loaded.chat_turn_timeout_seconds, 600)
 
     def test_validate_startup_rejects_a_chat_turn_timeout_not_greater_than_await_retrieval_timeout(self):
-        from tta_backend.config.settings import ConfigurationError, Settings
+        from tta_backend.infrastructure.settings import ConfigurationError, Settings
 
         # A misconfiguration here would make every retrieval that runs the
         # full await_retrieval_timeout_seconds a guaranteed turn timeout.
@@ -413,7 +392,7 @@ class ConfigLoggingTests(unittest.TestCase):
             loaded.validate_startup()
 
     def test_validate_startup_accepts_a_chat_turn_timeout_greater_than_await_retrieval_timeout(self):
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         loaded = Settings(
             db_password="x", **REQUIRED_KWARGS, google_api_key="x", groq_api_key="x",
@@ -423,7 +402,7 @@ class ConfigLoggingTests(unittest.TestCase):
         loaded.validate_startup()  # must not raise
 
     def test_map_tile_urls_substitute_the_api_key_placeholder(self):
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
 
         with patch.dict(os.environ, {"MAP_TILE_API_KEY": "abc123"}, clear=True):
             get_settings.cache_clear()
@@ -442,7 +421,7 @@ class ConfigLoggingTests(unittest.TestCase):
         )
 
     def test_map_tile_terrain_url_never_receives_the_carto_key(self):
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
 
         with patch.dict(os.environ, {"MAP_TILE_API_KEY": "abc123"}, clear=True):
             get_settings.cache_clear()
@@ -455,7 +434,7 @@ class ConfigLoggingTests(unittest.TestCase):
         self.assertEqual(loaded.resolved_map_terrain_dem_url, loaded.map_terrain_dem_url)
 
     def test_map_tile_urls_drop_the_key_parameter_when_no_key_is_configured(self):
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
 
         with patch.dict(os.environ, {}, clear=True):
             get_settings.cache_clear()
@@ -471,7 +450,7 @@ class ConfigLoggingTests(unittest.TestCase):
         self.assertNotIn("{key}", loaded.resolved_map_basemap_dark_url)
 
     def test_map_tile_url_override_without_a_placeholder_is_left_alone(self):
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
 
         override = "https://tiles.internal.example/dem/{z}/{x}/{y}.png"
         with patch.dict(
@@ -487,7 +466,7 @@ class ConfigLoggingTests(unittest.TestCase):
         self.assertEqual(loaded.resolved_map_basemap_light_url, override)
 
     def test_map_tile_api_key_is_url_encoded_into_the_query(self):
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
 
         with patch.dict(os.environ, {"MAP_TILE_API_KEY": "a b&c=d"}, clear=True):
             get_settings.cache_clear()
@@ -497,7 +476,7 @@ class ConfigLoggingTests(unittest.TestCase):
         self.assertTrue(loaded.resolved_map_basemap_light_url.endswith("?key=a%20b%26c%3Dd"))
 
     def test_settings_normalizes_invalid_modes(self):
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
 
         with patch.dict(os.environ, {"DATA_FETCH_MODE": "bogus", "LOG_FORMAT": "xml"}, clear=True):
             get_settings.cache_clear()
@@ -513,7 +492,7 @@ class ConfigLoggingTests(unittest.TestCase):
         known-benign, but noisy enough to drown real WARNING/ERROR events in
         the log auditor's correlation. Silenced at
         logger config rather than at each call site."""
-        from tta_backend.utils.logging import configure_logging
+        from tta_backend.infrastructure.logging import configure_logging
 
         noisy_logger = logging.getLogger("langchain_google_genai._function_utils")
         unrelated_logger = logging.getLogger("api")
@@ -524,7 +503,7 @@ class ConfigLoggingTests(unittest.TestCase):
         self.assertTrue(unrelated_logger.isEnabledFor(logging.WARNING))
 
     def test_json_formatter_outputs_expected_fields_and_extra_values(self):
-        from tta_backend.utils.logging import JsonFormatter
+        from tta_backend.infrastructure.logging import JsonFormatter
 
         record = logging.LogRecord(
             name="api",
@@ -552,14 +531,14 @@ class RedisConfigTests(unittest.TestCase):
     serve a turn at all. Fatal at boot, not a per-request surprise."""
 
     def test_validate_startup_requires_a_redis_url(self):
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         loaded = Settings(db_password="x", **{**REQUIRED_KWARGS, "redis_url": None})
         with self.assertRaisesRegex(RuntimeError, "REDIS_URL"):
             loaded.validate_startup()
 
     def test_a_configured_redis_url_is_read_from_the_environment(self):
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
 
         with patch.dict(os.environ, {"REDIS_URL": "redis://redis:6379/0"}, clear=True):
             get_settings.cache_clear()

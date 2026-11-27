@@ -14,7 +14,7 @@ from typing import Any, cast
 from redis import asyncio as aioredis
 from redis.typing import EncodableT, FieldT
 
-from tta_backend.config.settings import get_settings
+from tta_backend.infrastructure.settings import get_settings
 
 logger = logging.getLogger(__name__)
 

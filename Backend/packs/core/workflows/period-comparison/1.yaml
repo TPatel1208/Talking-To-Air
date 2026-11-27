@@ -1,0 +1,70 @@
+name: period-comparison
+version: 1
+status: draft
+description: Compare one quantity over an area between two periods, with the difference.
+examples:
+  - How did NO2 over New Jersey in July 2024 compare with July 2023?
+  - Did tropospheric ozone over Texas change between summer 2023 and summer 2024?
+  - Show the percent change in formaldehyde over California from May 2024 to May 2025.
+
+inputs:
+  quantity: {type: quantity, ask: "Which quantity?"}
+  area:     {type: area, ask: "Which area?"}
+  first:    {type: date_range, ask: "Which is the first period?"}
+  second:   {type: date_range, ask: "Which is the second period?"}
+  change:   {type: choice, options: [absolute, percent], default: absolute}
+  # A product or instrument the user named; absent means the registry chooses.
+  named:    {type: text, default: null}
+
+# One product serves both periods. Near-real-time streams are left out so the periods stay consistent.
+products:
+  quantity:
+    - TEMPO_NO2
+    - TROPOMI_NO2
+    - OMI_NO2
+    - TEMPO_O3TOT
+    - OMI_O3
+    - TEMPO_HCHO
+    - OMI_HCHO
+    - OMI_SO2
+    - MODIS_AOD_TERRA
+    - MODIS_AOD_AQUA
+    - VIIRS_AOD_SNPP
+    - VIIRS_AOD_NOAA20
+
+limits:
+  min_coverage: 0.3
+
+steps:
+  - id: first_data
+    use: sources.satellite.get_data
+    with: {quantity: $quantity, named: $named, area: $area, dates: $first, date_role: range, min_valid_fraction: limits.min_coverage}
+  - id: second_data
+    use: sources.satellite.get_data
+    with: {quantity: $quantity, area: $area, dates: $second, date_role: range, product: $first_data.product, min_valid_fraction: limits.min_coverage}
+    method: The second period uses {first_data.product}, the same product as the first.
+  - id: first_mean
+    use: operations.aggregate_time
+    with: {data: $first_data}
+  - id: second_mean
+    use: operations.aggregate_time
+    with: {data: $second_data}
+  - id: diff
+    use: operations.difference
+    with: {a: $first_mean, b: $second_mean, change: $change}
+    method: The first period is the baseline, so each cell's change is its second-period value minus its first-period value, over {summary.paired_cells} cells valid in both.
+  - id: figure
+    use: render.map
+    with: {grid: $diff, style: diverging, title: Change from the first period to the second}
+  - id: stat
+    use: operations.statistic
+    with: {data: $diff, stat: mean}
+
+outputs:
+  findings:
+    - {name: mean_change, value: $stat.summary.value, unit: $diff.unit}
+    - {name: percent_change, value: $diff.summary.percent_change, unit: "%", optional: true}
+    - {name: largest_increase, value: $diff.summary.max, unit: $diff.unit, where: $diff.summary.max_location}
+    - {name: largest_decrease, value: $diff.summary.min, unit: $diff.unit, where: $diff.summary.min_location}
+  figures: [$figure]
+  data: [$diff, $first_mean, $second_mean]

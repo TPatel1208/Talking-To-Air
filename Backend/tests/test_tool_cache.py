@@ -59,7 +59,7 @@ class ToolCacheAllowlistTests(unittest.IsolatedAsyncioTestCase):
         self.server.start()
         self.addCleanup(self.server.stop)
 
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
 
         self.tools = await load_raw_mcp_tools(
@@ -140,20 +140,6 @@ class ToolCacheAllowlistTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual([handle for _, handle in self.calls], ["d1", "d2"])
 
-    async def test_the_cache_is_invisible_to_the_model_facing_compaction_wrapper(self):
-        """The **raw** result is what is cached, so model-view compaction still runs
-        normally and a hit is indistinguishable from a miss downstream."""
-        from tta_backend.earthdata_mcp.workspace import bind_workspace, model_view_describe_dataset
-
-        bound = bind_workspace(self.tools, lambda: "17")
-        model_facing = model_view_describe_dataset(bound["describe_dataset"])
-
-        on_miss = await model_facing.ainvoke({"dataset_handle": "d1"})
-        on_hit = await model_facing.ainvoke({"dataset_handle": "d1"})
-
-        self.assertEqual(on_hit, on_miss)
-        self.assertEqual(len(self.calls), 1)
-
     async def test_hit_and_miss_are_counted_per_tool_name(self):
         """Story #6: the cache's value must be measurable rather than
         assumed — and per tool, so it is visible *which* call is repeating."""
@@ -230,7 +216,7 @@ class ToolCacheNeverStoresErrorsTests(unittest.IsolatedAsyncioTestCase):
         self.server.start()
         self.addCleanup(self.server.stop)
 
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
 
         self.tools = await load_raw_mcp_tools(
@@ -280,7 +266,7 @@ class ToolCacheCredentialHygieneTests(unittest.IsolatedAsyncioTestCase):
         self.server.start()
         self.addCleanup(self.server.stop)
 
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
         from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
 
         self.tools = await load_raw_mcp_tools(
@@ -383,7 +369,7 @@ class ToolCacheTtlAndBoundTests(unittest.TestCase):
             self.assertEqual(lookup(3), "three")
 
     def _reload_settings(self):
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
 
         get_settings.cache_clear()
         self.addCleanup(get_settings.cache_clear)

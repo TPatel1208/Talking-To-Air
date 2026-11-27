@@ -1,0 +1,387 @@
+"""Geographic utility helpers.
+
+Bounding boxes may be provided as a comma-separated string, a flat four-item
+list or tuple, or a single-item list/tuple wrapper around either form.
+"""
+
+from collections.abc import Collection, Hashable
+from typing import Any, Tuple
+
+
+LAT_COORD_CANDIDATES = ("lat", "latitude", "Latitude", "LAT")
+LON_COORD_CANDIDATES = ("lon", "longitude", "Longitude", "LON", "long")
+
+# CF unit strings a latitude/longitude axis is published against. The
+# spelling varies across products (degrees_north / degree_N / degreesN),
+# so the vocabulary is the identification signal, not any one spelling.
+LAT_UNITS = frozenset({"degrees_north", "degree_north", "degrees_N", "degree_N", "degreesN", "degreeN"})
+LON_UNITS = frozenset({"degrees_east", "degree_east", "degrees_E", "degree_E", "degreesE", "degreeE"})
+
+
+def _candidate_vars(obj: Any) -> dict[str, Any]:
+    """Map every variable name that could be a horizontal coordinate to its
+    DataArray, scanning both coords and (for a Dataset) data_vars. A
+    DataArray only carries coords."""
+    if hasattr(obj, "data_vars"):  # Dataset
+        names = list(obj.coords) + list(obj.data_vars)
+    else:  # DataArray
+        names = list(obj.coords)
+    return {name: obj[name] for name in names}
+
+
+_BOUNDS_SUFFIXES = ("_bnds", "_bounds", "_vertices", "_edges")
+
+
+def _is_meta_match(var: Any, standard_name: str, units: frozenset[str]) -> bool:
+    if str(var.attrs.get("standard_name", "")).strip() == standard_name:
+        return True
+    return str(var.attrs.get("units", "")).strip() in units
+
+
+def _tiebreak(names: list[str], cands: dict[str, Any], dims: Collection[Hashable]) -> str | None:
+    """Pick the axis variable among several metadata matches. Metadata
+    matching widens the net onto bounds/edge variables (which carry the same
+    units as their axis); prefer the actual coordinate axis over them."""
+    if not names:
+        return None
+    non_bounds = [n for n in names if not n.endswith(_BOUNDS_SUFFIXES)]
+    pool = non_bounds or names
+    # Structurally the axis has the fewest dims and is a dimension
+    # coordinate; a bounds/edge var carries an extra vertex dim. This
+    # catches unseen bounds spellings the suffix list never enumerated.
+    return min(pool, key=lambda n: (cands[n].ndim, 0 if n in dims else 1, list(cands).index(n)))
+
+
+def _coordinate_refs(obj: Any) -> set[str]:
+    """Leaf names referenced by a science variable's CF `coordinates`
+    attribute. Our group merge strips paths, so `geolocation/latitude` is
+    matched as `latitude`."""
+    raw = obj.attrs.get("coordinates") or getattr(obj, "encoding", {}).get("coordinates")
+    if not raw:
+        return set()
+    return {token.split("/")[-1] for token in str(raw).split()}
+
+
+def _pick(cands: dict[str, Any], dims: Collection[Hashable], standard_name: str, units: frozenset[str], names: tuple[str, ...]) -> str | None:
+    # CF metadata is the primary, universal signal.
+    meta = [n for n, v in cands.items() if _is_meta_match(v, standard_name, units)]
+    picked = _tiebreak(meta, cands, dims)
+    if picked is not None:
+        return picked
+    # Name allowlist is the fallback for non-CF files only.
+    return next((n for n in names if n in cands), None)
+
+
+def _identify(obj: Any, standard_name: str, units: frozenset[str], names: tuple[str, ...]) -> str | None:
+    cands = _candidate_vars(obj)
+    dims = set(obj.dims)
+    # 1. The science variable's own `coordinates` pointer is authoritative,
+    #    when it resolves. Opportunistic: if it doesn't, fall through.
+    refs = _coordinate_refs(obj)
+    if refs:
+        restricted = {n: v for n, v in cands.items() if n in refs}
+        picked = _pick(restricted, dims, standard_name, units, names)
+        if picked is not None:
+            return picked
+    # 2./3. CF standard_name/units, then the name allowlist.
+    return _pick(cands, dims, standard_name, units, names)
+
+
+def identify_lat(obj: Any) -> str | None:
+    """Return the name of the latitude variable on a Dataset or DataArray,
+    identified by CF metadata rather than a variable-name allowlist."""
+    return _identify(obj, "latitude", LAT_UNITS, LAT_COORD_CANDIDATES)
+
+
+def identify_lon(obj: Any) -> str | None:
+    """Return the name of the longitude variable on a Dataset or DataArray."""
+    return _identify(obj, "longitude", LON_UNITS, LON_COORD_CANDIDATES)
+
+
+TIME_NAME_CANDIDATES = ("time", "Time", "TIME", "t")
+
+
+def _is_time_meta_match(var: Any) -> bool:
+    if str(var.attrs.get("standard_name", "")).strip() == "time":
+        return True
+    if str(var.attrs.get("axis", "")).strip().upper() == "T":
+        return True
+    dtype = getattr(var, "dtype", None)
+    return dtype is not None and _is_datetime_dtype(dtype)
+
+
+def _is_datetime_dtype(dtype: Any) -> bool:
+    import numpy as np
+
+    return np.issubdtype(dtype, np.datetime64)
+
+
+def identify_time(obj: Any) -> str | None:
+    """Return the name of the time variable on a Dataset or DataArray,
+    identified by CF metadata (``standard_name: time`` / ``axis: T`` /
+    datetime64 dtype) rather than the literal name "time" -- so a
+    MERRA-2-style ``valid_time`` dimension is still recognized as time,
+    like lat/lon identification. The bare-name
+    allowlist remains the fallback for files with no CF hints at all."""
+    cands = _candidate_vars(obj)
+    dims = set(obj.dims)
+    meta_matches = [n for n, v in cands.items() if _is_time_meta_match(v)]
+    if meta_matches:
+        return min(meta_matches, key=lambda n: (0 if n in dims else 1, list(cands).index(n)))
+    return next((n for n in TIME_NAME_CANDIDATES if n in cands), None)
+
+
+# CF unit strings a physical VERTICAL axis is published against, by kind. As
+# with lat/lon, the identification signal is the vocabulary rather than
+# any one variable name: TEMPO_O3PROF spells its axes
+# ``ozone_profile_pressure``/``ozone_profile_altitude``, MERRA-2 spells its
+# ``lev``, and the next layered product will spell them something else again --
+# but they all publish hPa or km.
+PRESSURE_UNITS = frozenset({
+    "hpa", "hectopascal", "hectopascals", "mb", "mbar", "millibar", "millibars",
+    "pa", "pascal", "pascals", "kpa", "kilopascal", "kilopascals", "atm",
+})
+ALTITUDE_UNITS = frozenset({
+    "km", "kilometer", "kilometers", "kilometre", "kilometres",
+    "m", "metre", "metres", "meter", "meters",
+})
+
+# Values producers write into a standard_name they never set. A placeholder is
+# an ABSENCE, not a declaration, and reading it as one short-circuits the units
+# check: an hPa coordinate labelled ``standard_name: none`` came back classified
+# as not-vertical at all, which reads to the caller as "this product publishes
+# no pressure axis". Fails safe rather than wrong, but it fails on a real file.
+_PLACEHOLDER_STANDARD_NAMES = frozenset({
+    "", "-", "--", "n/a", "na", "none", "null", "nil", "unknown", "unspecified", "unset", "tbd",
+})
+
+# CF standard names that name a physical vertical coordinate. Deliberately a
+# CLOSED set with a hard veto: a variable that has declared itself something
+# else is not reconsidered on its units, because "m" is a length whether it
+# measures height or an easting.
+#
+# The cost of the veto is that a real CF name missing from here silently kills a
+# genuine axis, so the list has to actually be complete for the names products
+# use. ``height_above_mean_sea_level`` and ``height_above_geopotential_datum``
+# are both real CF names published in metres and were both missing.
+#
+# ``geopotential_height`` is mapped to altitude knowingly: it is geopotential,
+# not geometric, height -- they differ by ~0.3% at 10 km and ~1.5% at 50 km.
+# Treating them as one is right for selecting a layer and wrong for a precise
+# altitude, which is why the resolution discloses which variable answered.
+_VERTICAL_STANDARD_NAMES = {
+    "air_pressure": "pressure",
+    "air_pressure_at_mean_sea_level": "pressure",
+    "atmosphere_pressure_coordinate": "pressure",
+    "atmosphere_ln_pressure_coordinate": "pressure",
+    "altitude": "altitude",
+    "height": "altitude",
+    "height_above_mean_sea_level": "altitude",
+    "height_above_geopotential_datum": "altitude",
+    "height_above_reference_ellipsoid": "altitude",
+    "geopotential_height": "altitude",
+}
+
+
+def vertical_axis_kind(var: Any) -> str | None:
+    """``"pressure"``, ``"altitude"`` or None for one variable, by CF metadata.
+
+    ``standard_name`` wins over units, because units alone are ambiguous: "m"
+    is a length whether it measures height above the surface or an easting on
+    a projected grid. A variable that declares itself is believed; one that
+    doesn't is judged on its units alone, which is how real products (whose
+    profile axes carry ``units`` and a free-text ``comment`` and nothing else)
+    have to be read.
+
+    A *placeholder* standard_name ("none", "N/A", "unknown") is treated as no
+    declaration at all, so such a variable falls through to its units rather
+    than being ruled out. That is the same rule, not an exception to it: the
+    precedence exists because a declaration carries information, and a
+    placeholder carries none.
+    """
+    attrs = getattr(var, "attrs", None) or {}
+    standard = str(attrs.get("standard_name", "")).strip().lower()
+    if standard in _PLACEHOLDER_STANDARD_NAMES:
+        standard = ""
+    if standard:
+        # A declaration is believed in BOTH directions. ``projection_y_coordinate``
+        # is published in metres, and reading it as an altitude would draw a map
+        # projection as an atmosphere -- so a variable that has already said what
+        # it is and did not say "vertical" is not reconsidered on its units.
+        return _VERTICAL_STANDARD_NAMES.get(standard)
+    units = str(attrs.get("units", "")).strip().lower()
+    if units in PRESSURE_UNITS:
+        return "pressure"
+    if units in ALTITUDE_UNITS:
+        return "altitude"
+    return None
+
+
+def vertical_axes_for_dim(obj: Any, dim: str) -> dict[str, Any]:
+    """``{kind: name}`` for every physical vertical axis spanning ``dim``.
+
+    Scans coordinates before data variables: a granule that publishes its
+    vertical axes as CF *auxiliary coordinates* (TEMPO_O3PROF does) already has
+    them attached to the science variable, so they need no co-locating; one that
+    publishes them as ordinary data variables does. First match per kind wins,
+    so the attached form is never displaced by a looser one.
+    """
+    if not dim:
+        return {}
+    found: dict[str, Any] = {}
+    names = list(getattr(obj, "coords", ()) or ())
+    if hasattr(obj, "data_vars"):
+        names += list(obj.data_vars)
+    for name in names:
+        var = obj[name]
+        if dim not in getattr(var, "dims", ()):
+            continue
+        kind = vertical_axis_kind(var)
+        if kind and kind not in found:
+            found[kind] = name
+    return found
+
+
+def is_vertical_dim(obj: Any, dim: str) -> bool:
+    """Whether ``dim`` is an atmospheric vertical axis — either because it
+    indexes a pressure/altitude coordinate itself, or because one spans it.
+
+    Used to decide whether a "this variable has an extra dimension" refusal
+    should point at the vertical-profile tool. Deliberately conservative: an
+    unlabelled index dimension (a wavelength, a retrieval attempt) answers
+    False, so the suggestion is never made where a profile could not help.
+    """
+    return bool(vertical_axes_for_dim(obj, dim))
+
+
+def normalise_bbox(bbox: Any) -> Tuple[float, float, float, float]:
+    """Return bbox as (min_lon, min_lat, max_lon, max_lat)."""
+    while isinstance(bbox, (list, tuple)) and len(bbox) == 1:
+        bbox = bbox[0]
+
+    if isinstance(bbox, str):
+        parts = [float(x) for x in bbox.split(",")]
+    else:
+        parts = [float(x) for x in bbox]
+
+    if len(parts) != 4:
+        raise ValueError(f"bbox must have 4 values, got {len(parts)}: {bbox!r}")
+    return parts[0], parts[1], parts[2], parts[3]
+
+
+# Metre-like unit strings that mark a projected (x/y) grid rather than a
+# geographic lat/lon one.
+METRE_UNITS = frozenset({"m", "metre", "metres", "meter", "meters"})
+
+
+def _projected_crs_name(obj: Any) -> str | None:
+    """Return a CRS descriptor if ``obj`` carries a projected-grid marker
+    (a CF ``grid_mapping`` variable / ``crs`` / ``spatial_ref``), else None."""
+    for name, var in _candidate_vars(obj).items():
+        gm = var.attrs.get("grid_mapping_name")
+        if gm:
+            return str(gm)
+        if name in ("crs", "spatial_ref"):
+            return str(var.attrs.get("crs_wkt") or name)
+    return None
+
+
+def _has_metre_xy(obj: Any) -> bool:
+    cands = _candidate_vars(obj)
+
+    def _is_metre(axis: str) -> bool:
+        return axis in cands and str(cands[axis].attrs.get("units", "")).strip() in METRE_UNITS
+
+    return _is_metre("x") and _is_metre("y")
+
+
+# Relative tolerance on a 1-D axis's step, as a fraction of the median step,
+# below which the axis counts as uniformly spaced. Real "uniform" grids carry
+# floating-point wobble (0.25° cells stored as binary floats jitter in the
+# ~1e-9 range); a genuinely non-uniform axis (a stretched gap, a concatenation
+# of two resolutions) is orders of magnitude past this. Picked against real
+# MERRA-2 / TEMPO L3 grids.
+_GRID_STEP_REL_TOLERANCE = 1e-3
+
+
+def _is_uniform_1d(values: Any) -> bool:
+    """True if a 1-D coordinate array is uniformly spaced within
+    :data:`_GRID_STEP_REL_TOLERANCE` of its median step. Axes with fewer than
+    three points have at most one gap and are uniform by definition."""
+    import numpy as np
+
+    arr = np.asarray(values, dtype="float64").ravel()
+    if arr.size < 3:
+        return True
+    steps = np.diff(arr)
+    median = np.median(np.abs(steps))
+    if median == 0:
+        # A degenerate (all-equal) axis has no resolution to misplace; leave
+        # it to the caller's own len<2 / zero-resolution handling.
+        return True
+    return bool(np.max(np.abs(steps - np.median(steps))) <= _GRID_STEP_REL_TOLERANCE * median)
+
+
+def _grid_kind(obj: Any) -> str:
+    """Classify ``obj``'s horizontal grid: ``rectilinear`` (1-D uniformly
+    spaced lat/lon, the supported case), ``irregular`` (1-D lat/lon whose
+    spacing varies — the affine mask would mis-place pixels), ``curvilinear``
+    (2-D lat/lon swath), ``projected`` (x/y + CRS), or ``none`` (no
+    recognizable horizontal coordinates)."""
+    lat, lon = identify_lat(obj), identify_lon(obj)
+    if lat is not None and lon is not None:
+        if obj[lat].ndim <= 1 and obj[lon].ndim <= 1:
+            if _is_uniform_1d(obj[lat].values) and _is_uniform_1d(obj[lon].values):
+                return "rectilinear"
+            return "irregular"
+        return "curvilinear"
+    if _projected_crs_name(obj) is not None or _has_metre_xy(obj):
+        return "projected"
+    return "none"
+
+
+def ensure_supported_grid(obj: Any) -> None:
+    """Raise a typed :class:`MCPToolError` when ``obj`` is on a grid the
+    1-D rectilinear mask/plot math can't honor, so a researcher gets a
+    specific "not supported yet" answer instead of a silent mis-mask or an
+    opaque empty-coords crash. A rectilinear grid (or one with no
+    recognizable coordinates — handled by the caller's own error) is a
+    no-op."""
+    kind = _grid_kind(obj)
+    if kind not in ("curvilinear", "projected", "irregular"):
+        return
+    from tta_backend.domain.errors import CATEGORY_UNSUPPORTED_GRID, MCPToolError
+
+    if kind == "irregular":
+        raise MCPToolError(
+            CATEGORY_UNSUPPORTED_GRID,
+            "This product is on a 1-D grid with non-uniform spacing; the mask "
+            "math assumes a single cell size, so lat/lon masking isn't supported "
+            "yet for it (a wrong-region mean would otherwise happen silently).",
+            suggestion="Try a product published on a regularly-spaced lat/lon grid.",
+        )
+    if kind == "curvilinear":
+        raise MCPToolError(
+            CATEGORY_UNSUPPORTED_GRID,
+            "This product is on a 2-D curvilinear (swath) grid; lat/lon plotting isn't supported yet.",
+            suggestion="Try a gridded (Level 3) product for this region and time.",
+        )
+    crs = _projected_crs_name(obj) or "unknown"
+    raise MCPToolError(
+        CATEGORY_UNSUPPORTED_GRID,
+        f"This product is on a projected grid (CRS: {crs}); lat/lon plotting isn't supported yet.",
+        suggestion="Try a product published on a geographic lat/lon grid.",
+    )
+
+
+def find_lat_coord(da: Any) -> str | None:
+    """Return the latitude coordinate name on a DataArray (thin wrapper over
+    the canonical :func:`identify_lat`, kept for its many callers)."""
+    name = identify_lat(da)
+    return name if name in da.coords else None
+
+
+def find_lon_coord(da: Any) -> str | None:
+    """Return the longitude coordinate name on a DataArray."""
+    name = identify_lon(da)
+    return name if name in da.coords else None

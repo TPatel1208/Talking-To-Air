@@ -1,0 +1,114 @@
+name: event-vs-baseline
+version: 1
+status: draft
+description: Compare one quantity over an area on an event day with typical days nearby, as the event minus the mean of comparison days the user confirms.
+examples:
+  - How did NO2 over New Jersey on 2024-07-04 compare with typical days?
+  - Was formaldehyde over Houston on 2024-08-15 higher than on normal days around it?
+  - Compare aerosol optical depth over California on 2024-06-08 with a typical weekend.
+
+inputs:
+  quantity:   {type: quantity, ask: "Which quantity?"}
+  area:       {type: area, ask: "Which area?"}
+  event_date: {type: date, ask: "Which day is the event?"}
+  change:     {type: choice, options: [absolute, percent], default: absolute}
+  # A product or instrument the user named; absent means the registry chooses.
+  named:      {type: text, default: null}
+
+# Daily or finer products only, so each comparison day is a day of its own. Near-real-time streams are
+# left out so the event and its comparison days come from one consistent record.
+products:
+  quantity:
+    - TEMPO_NO2
+    - OMI_NO2
+    - TEMPO_O3TOT
+    - OMI_O3
+    - TEMPO_HCHO
+    - OMI_HCHO
+    - OMI_SO2
+    - MODIS_AOD_TERRA
+    - MODIS_AOD_AQUA
+    - VIIRS_AOD_SNPP
+    - VIIRS_AOD_NOAA20
+
+limits:
+  min_comparison_days: 5
+  min_coverage: 0.3
+
+steps:
+  - id: event
+    use: sources.satellite.get_data
+    with: {quantity: $quantity, named: $named, cadence: daily, area: $area, dates: $event_date, date_role: subject, min_valid_fraction: limits.min_coverage}
+  - id: candidates
+    use: operations.select_comparison_days
+    with: {event_date: $event_date, product: $event.product}
+  # Days without granules are dropped here, before the user is asked, with no retrieval.
+  - id: available
+    use: sources.satellite.check_availability
+    with: {product: $event.product, area: $area, dates: $candidates.days}
+    method: The {count(candidates.days)} candidate days were checked for {product} granules over {values.area_name}; {count(values.days_with_data)} have them.
+  - id: no_record
+    stop: insufficient_evidence
+    when: not exists($available.days_with_data)
+    reason: None of the {count($candidates.days)} candidate days could be checked, because {event.product} does not cover {area} on them.
+  - id: too_few_available
+    stop: insufficient_evidence
+    after: [no_record]
+    when: count($available.days_with_data) < limits.min_comparison_days
+    reason: Only {count($available.days_with_data)} of the {count($candidates.days)} candidate days have {event.product} data over {area}; at least {limits.min_comparison_days} are needed for a baseline.
+  - id: days
+    after: [too_few_available]
+    ask:
+      kind: confirm_list
+      question: These days will be used as the baseline. Remove or add days, then confirm.
+      items: $available.days_with_data
+      # A comparison retrieval takes at most 31 days.
+      max_items: 31
+    method: The proposed days with granules were put to the user, who could remove or add days before confirming them.
+  # The answer is only checked for being dates, so a day the user adds is checked here: the event day, the day
+  # either side of it and days the product has not published are left out, each disclosed.
+  - id: checked
+    use: operations.check_comparison_days
+    with: {event_date: $event_date, days: $days, product: $event.product}
+  - id: too_few_confirmed
+    stop: insufficient_evidence
+    when: count($checked.days) < limits.min_comparison_days
+    reason: Only {count($checked.days)} of the {count($days)} confirmed days can be comparison days; at least {limits.min_comparison_days} are needed for a baseline.
+  - id: baseline
+    use: sources.satellite.get_data
+    after: [too_few_confirmed]
+    with: {quantity: $quantity, area: $area, dates: $checked.days, date_role: comparison, product: $event.product, min_valid_fraction: limits.min_coverage}
+    method: The comparison days use {event.product}, the same product as the event day; {quality.days_with_data} of the {count(checked.days)} usable confirmed days had valid data and form the baseline.
+  - id: too_few_kept
+    stop: insufficient_evidence
+    when: $baseline.quality.days_with_data < limits.min_comparison_days
+    reason: Only {baseline.quality.days_with_data} of the {count($checked.days)} usable confirmed days had valid {event.product} data over {area}; at least {limits.min_comparison_days} are needed for a baseline.
+  - id: event_mean
+    use: operations.aggregate_time
+    with: {data: $event}
+  - id: baseline_mean
+    use: operations.aggregate_time
+    after: [too_few_kept]
+    with: {data: $baseline}
+  - id: diff
+    use: operations.difference
+    with: {a: $baseline_mean, b: $event_mean, change: $change, over: two_periods}
+    method: The baseline is the mean of the comparison days, so each cell's change is its event-day value minus its baseline value, over {summary.paired_cells} cells valid in both.
+  - id: figure
+    use: render.map
+    with: {grid: $diff, style: diverging, title: Event day minus the baseline of comparison days}
+
+# A stop ends the run before the baseline exists, so everything from the baseline on is marked as possibly absent.
+outputs:
+  findings:
+    - {name: event_mean, value: $event_mean.summary.mean, unit: $event_mean.unit}
+    - {name: baseline_mean, value: $baseline_mean.summary.mean, unit: $baseline_mean.unit, optional: true}
+    - {name: mean_difference, value: $diff.summary.mean_difference, unit: $event_mean.unit, optional: true}
+    - {name: percent_change, value: $diff.summary.percent_change, unit: "%", optional: true}
+    - {name: baseline_days, value: $baseline.quality.days_with_data, unit: days, optional: true}
+  figures:
+    - {from: $figure, optional: true}
+  data:
+    - {from: $diff, optional: true}
+    - $event_mean
+    - {from: $baseline_mean, optional: true}

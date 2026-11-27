@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import copy
 import functools
-import json
 import logging
 from typing import TYPE_CHECKING, Any, Callable, Protocol
 
@@ -88,9 +87,8 @@ def bind_workspace(
     injector resolves one (connected ∧ unexpired). Without ``edl_injector``
     (the default) no token is ever injected."""
     bound = {name: _bind_one(tool, user_id_getter, edl_injector) for name, tool in tools.items()}
-    # Applied here, not in curated_model_tools: unlike describe_dataset's
-    # model view, all three AOI callers must get the region translation, and
-    # all three take the dict this function returns.
+    # Applied here so every AOI caller gets the region translation: all of
+    # them take the dict this function returns.
     if "define_area_of_interest" in bound:
         bound["define_area_of_interest"] = region_aware_area_of_interest(
             bound["define_area_of_interest"]
@@ -178,9 +176,7 @@ def _bind_one(
             if injected_by is not None and exc.category == CATEGORY_TOKEN_INVALID:
                 await injected_by.mark_invalid(user_id)
             # A rejected AOI *input* must leave a greppable trace, so a silent
-            # region substitution is discoverable from logs; the
-            # dispatch-layer guard (services/subagent_dispatch.py) uses the same
-            # signal to refuse the substituted answer.
+            # region substitution is discoverable from logs.
             if tool.name == "define_area_of_interest" and exc.category == CATEGORY_USER_INPUT:
                 logger.warning(
                     "aoi_user_input_rejected",
@@ -204,8 +200,8 @@ def _bind_one(
         # Only reached on success: every classified failure returned above, so
         # a transient provider_unavailable is retried on the next attempt
         # rather than replayed for the rest of the TTL. The **raw** result is
-        # what is stored, so parse_tool_result and model_view_describe_dataset
-        # behave byte-identically on hit and miss.
+        # what is stored, so parse_tool_result behaves
+        # byte-identically on hit and miss.
         if cacheable:
             tool_cache.store(tool.name, kwargs["workspace_id"], kwargs, raw)
         return raw
@@ -341,72 +337,3 @@ def region_aware_area_of_interest(tool: BaseTool) -> BaseTool:
         description=tool.description,
         args_schema=tool.args_schema,
     )
-
-
-def model_view_describe_dataset(tool: BaseTool) -> BaseTool:
-    """Wrap an already workspace-bound ``describe_dataset`` tool so its
-    model-facing result stays proportional to what the model actually uses
-    — variable names/units/advisories to subset, never every
-    fill-value/valid-range record a many-variable collection carries.
-
-    Applied only to the curated model-facing tool list
-    (earthdata_mcp/toolset.py::curated_model_tools) — the original tool in
-    the shared workspace-bound dict is left untouched, since discovery-pane
-    consumers (services/discovery_service.py) call it directly by name and
-    need the full per-variable records.
-    """
-
-    async def _call(**kwargs: Any) -> Any:
-        raw = await tool.ainvoke(kwargs)
-        try:
-            result = parse_tool_result(raw)
-        except MCPToolError as exc:
-            # ``tool`` is already bind_workspace-wrapped, so ``raw`` here is
-            # either real content or bind_workspace's own error envelope
-            # — re-raised by parse_tool_result and passed straight
-            # through unchanged rather than re-wrapped.
-            return exc.to_tool_json()
-        return json.dumps(_compact_describe_dataset_result(result))
-
-    return StructuredTool.from_function(
-        coroutine=_call,
-        name=tool.name,
-        description=tool.description,
-        args_schema=tool.args_schema,
-    )
-
-
-def _compact_describe_dataset_result(result: dict[str, Any]) -> dict[str, Any]:
-    variables = result.get("variables")
-    if not isinstance(variables, list):
-        return result
-    compacted = dict(result)
-    compacted["variables"] = [
-        _compact_variable(var) if isinstance(var, dict) else var for var in variables
-    ]
-    return compacted
-
-
-def _compact_variable(var: dict[str, Any]) -> dict[str, Any]:
-    """name/long_name/units/advisory_notes plus a one-line mask_note derived
-    from fill/range presence — the model needs variable names to subset, not
-    every fill-value/valid-range record."""
-    out: dict[str, Any] = {
-        "name": var.get("name"),
-        "long_name": var.get("long_name"),
-        "units": var.get("units"),
-        "advisory_notes": var.get("advisory_notes", []),
-    }
-    has_fill = bool(var.get("fill_values"))
-    has_range = bool(var.get("valid_ranges"))
-    if has_fill and has_range:
-        out["mask_note"] = "fill values and a valid range are defined"
-    elif has_fill:
-        out["mask_note"] = "fill values are defined, no valid range"
-    elif has_range:
-        out["mask_note"] = "a valid range is defined, no fill values"
-    else:
-        out["mask_note"] = "no fill/range metadata"
-    if "mask_metadata_note" in var:
-        out["mask_metadata_note"] = var["mask_metadata_note"]
-    return {k: v for k, v in out.items() if v is not None}

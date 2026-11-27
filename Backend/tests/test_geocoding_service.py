@@ -1,9 +1,8 @@
 """
 Geocoder unification tests: one shared GeocodingService instance
 (one cache, one rate limiter, one policy-compliant User-Agent) should back
-every consumer — the satellite plot/stat/validation tools' RegionResolver
-and the ground sensor tools' EPA AQS module — instead of each constructing
-its own.
+every consumer — each RegionResolver and any direct caller — instead of
+each constructing its own.
 """
 import importlib.util
 import unittest
@@ -55,10 +54,10 @@ class _FakeAsyncClient:
 )
 class GeocodingServiceUnificationTests(unittest.IsolatedAsyncioTestCase):
     """Deliberately does not reset utils.plotting's module-level singleton:
-    epa_aqs_tools (and every RegionResolver across the test process) already
-    captured a reference to it at import time, so resetting it here would
-    desync those references from a freshly-minted instance. Tests that need
-    an uncached lookup use a location name unique to this file instead.
+    every RegionResolver across the test process already captured a reference
+    to it, so resetting it here would desync those references from a
+    freshly-minted instance. Tests that need an uncached lookup use a location
+    name unique to this file instead.
     """
 
     def setUp(self):
@@ -76,25 +75,17 @@ class GeocodingServiceUnificationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIs(resolver.geocoding_service, get_geocoding_service())
 
-    async def test_epa_aqs_tools_geocoding_service_is_the_shared_singleton(self):
-        from tta_backend.tools.ground_sensor_tools import epa_aqs_tools
-        from tta_backend.utils.plotting import get_geocoding_service
-
-        self.assertIs(epa_aqs_tools.geocoding_service, get_geocoding_service())
-
     async def test_two_resolutions_of_the_same_place_share_one_network_call(self):
-        from tta_backend.tools.ground_sensor_tools import epa_aqs_tools
-        from tta_backend.utils.plotting import RegionResolver
+        from tta_backend.utils.plotting import RegionResolver, get_geocoding_service
 
         location = "T11 Unification Test Locale"
         with patch("tta_backend.utils.plotting.httpx.AsyncClient", _FakeAsyncClient):
             resolver = RegionResolver()
             await resolver.aresolve_location(location)
 
-            # A second consumer (the EPA tools' module-level geocoding_service,
-            # unified onto the same singleton) resolving the same place name
-            # must hit the shared cache, not the network again.
-            await epa_aqs_tools.geocoding_service.ageocode(location)
+            # A second consumer of the same singleton resolving the same
+            # place name must hit the shared cache, not the network again.
+            await get_geocoding_service().ageocode(location)
 
         self.assertEqual(_FakeAsyncClient.calls, 1)
 

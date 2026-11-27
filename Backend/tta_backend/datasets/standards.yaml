@@ -1,0 +1,136 @@
+# Source: US EPA NAAQS table (epa.gov/criteria-air-pollutants/naaqs-table) and AQI breakpoint table (aqs.epa.gov/aqsweb/documents/codetables/aqi_breakpoints.html), including the 2024 PM2.5 revision.
+#
+# One block per pollutant:
+#   name, unit              display name; unit of every breakpoint concentration
+#   default_averaging       breakpoint averaging period used when a lookup names none
+#   decimals                concentrations are truncated to this many decimals before lookup
+#   naaqs                   primary standards: level, unit, averaging_period, form
+#   breakpoints             AQI categories in ascending order: category, aqi_low, aqi_high,
+#                           concentration_low, concentration_high, averaging_period
+#
+# Ozone 1-hour breakpoints start at Unhealthy for Sensitive Groups: below that the
+# 8-hour value alone sets the category. SO2 1-hour stops at Unhealthy; higher
+# categories use the 24-hour value.
+
+o3:
+  name: Ozone
+  unit: ppm
+  default_averaging: 8-hour
+  decimals: 3
+  naaqs:
+    - level: 0.070
+      unit: ppm
+      averaging_period: 8-hour
+      form: Annual fourth-highest daily maximum 8-hour concentration, averaged over 3 years
+  breakpoints:
+    - {category: Good, aqi_low: 0, aqi_high: 50, concentration_low: 0.000, concentration_high: 0.054, averaging_period: 8-hour}
+    - {category: Moderate, aqi_low: 51, aqi_high: 100, concentration_low: 0.055, concentration_high: 0.070, averaging_period: 8-hour}
+    - {category: Unhealthy for Sensitive Groups, aqi_low: 101, aqi_high: 150, concentration_low: 0.071, concentration_high: 0.085, averaging_period: 8-hour}
+    - {category: Unhealthy, aqi_low: 151, aqi_high: 200, concentration_low: 0.086, concentration_high: 0.105, averaging_period: 8-hour}
+    - {category: Very Unhealthy, aqi_low: 201, aqi_high: 300, concentration_low: 0.106, concentration_high: 0.200, averaging_period: 8-hour}
+    - {category: Unhealthy for Sensitive Groups, aqi_low: 101, aqi_high: 150, concentration_low: 0.125, concentration_high: 0.164, averaging_period: 1-hour}
+    - {category: Unhealthy, aqi_low: 151, aqi_high: 200, concentration_low: 0.165, concentration_high: 0.204, averaging_period: 1-hour}
+    - {category: Very Unhealthy, aqi_low: 201, aqi_high: 300, concentration_low: 0.205, concentration_high: 0.404, averaging_period: 1-hour}
+    - {category: Hazardous, aqi_low: 301, aqi_high: 500, concentration_low: 0.405, concentration_high: 0.604, averaging_period: 1-hour}
+
+pm25:
+  name: PM2.5
+  unit: ug/m3
+  default_averaging: 24-hour
+  decimals: 1
+  naaqs:
+    - level: 9.0
+      unit: ug/m3
+      averaging_period: annual
+      form: Annual mean, averaged over 3 years
+    - level: 35
+      unit: ug/m3
+      averaging_period: 24-hour
+      form: 98th percentile, averaged over 3 years
+  breakpoints:
+    - {category: Good, aqi_low: 0, aqi_high: 50, concentration_low: 0.0, concentration_high: 9.0, averaging_period: 24-hour}
+    - {category: Moderate, aqi_low: 51, aqi_high: 100, concentration_low: 9.1, concentration_high: 35.4, averaging_period: 24-hour}
+    - {category: Unhealthy for Sensitive Groups, aqi_low: 101, aqi_high: 150, concentration_low: 35.5, concentration_high: 55.4, averaging_period: 24-hour}
+    - {category: Unhealthy, aqi_low: 151, aqi_high: 200, concentration_low: 55.5, concentration_high: 125.4, averaging_period: 24-hour}
+    - {category: Very Unhealthy, aqi_low: 201, aqi_high: 300, concentration_low: 125.5, concentration_high: 225.4, averaging_period: 24-hour}
+    - {category: Hazardous, aqi_low: 301, aqi_high: 500, concentration_low: 225.5, concentration_high: 325.4, averaging_period: 24-hour}
+
+pm10:
+  name: PM10
+  unit: ug/m3
+  default_averaging: 24-hour
+  decimals: 0
+  naaqs:
+    - level: 150
+      unit: ug/m3
+      averaging_period: 24-hour
+      form: Not to be exceeded more than once per year on average over 3 years
+  breakpoints:
+    - {category: Good, aqi_low: 0, aqi_high: 50, concentration_low: 0, concentration_high: 54, averaging_period: 24-hour}
+    - {category: Moderate, aqi_low: 51, aqi_high: 100, concentration_low: 55, concentration_high: 154, averaging_period: 24-hour}
+    - {category: Unhealthy for Sensitive Groups, aqi_low: 101, aqi_high: 150, concentration_low: 155, concentration_high: 254, averaging_period: 24-hour}
+    - {category: Unhealthy, aqi_low: 151, aqi_high: 200, concentration_low: 255, concentration_high: 354, averaging_period: 24-hour}
+    - {category: Very Unhealthy, aqi_low: 201, aqi_high: 300, concentration_low: 355, concentration_high: 424, averaging_period: 24-hour}
+    - {category: Hazardous, aqi_low: 301, aqi_high: 500, concentration_low: 425, concentration_high: 604, averaging_period: 24-hour}
+
+no2:
+  name: Nitrogen dioxide
+  unit: ppb
+  default_averaging: 1-hour
+  decimals: 0
+  naaqs:
+    - level: 100
+      unit: ppb
+      averaging_period: 1-hour
+      form: Annual 98th percentile of 1-hour daily maximum concentrations, averaged over 3 years
+    - level: 53
+      unit: ppb
+      averaging_period: annual
+      form: Annual mean
+  breakpoints:
+    - {category: Good, aqi_low: 0, aqi_high: 50, concentration_low: 0, concentration_high: 53, averaging_period: 1-hour}
+    - {category: Moderate, aqi_low: 51, aqi_high: 100, concentration_low: 54, concentration_high: 100, averaging_period: 1-hour}
+    - {category: Unhealthy for Sensitive Groups, aqi_low: 101, aqi_high: 150, concentration_low: 101, concentration_high: 360, averaging_period: 1-hour}
+    - {category: Unhealthy, aqi_low: 151, aqi_high: 200, concentration_low: 361, concentration_high: 649, averaging_period: 1-hour}
+    - {category: Very Unhealthy, aqi_low: 201, aqi_high: 300, concentration_low: 650, concentration_high: 1249, averaging_period: 1-hour}
+    - {category: Hazardous, aqi_low: 301, aqi_high: 500, concentration_low: 1250, concentration_high: 2049, averaging_period: 1-hour}
+
+so2:
+  name: Sulfur dioxide
+  unit: ppb
+  default_averaging: 1-hour
+  decimals: 0
+  naaqs:
+    - level: 75
+      unit: ppb
+      averaging_period: 1-hour
+      form: Annual 99th percentile of 1-hour daily maximum concentrations, averaged over 3 years
+  breakpoints:
+    - {category: Good, aqi_low: 0, aqi_high: 50, concentration_low: 0, concentration_high: 35, averaging_period: 1-hour}
+    - {category: Moderate, aqi_low: 51, aqi_high: 100, concentration_low: 36, concentration_high: 75, averaging_period: 1-hour}
+    - {category: Unhealthy for Sensitive Groups, aqi_low: 101, aqi_high: 150, concentration_low: 76, concentration_high: 185, averaging_period: 1-hour}
+    - {category: Unhealthy, aqi_low: 151, aqi_high: 200, concentration_low: 186, concentration_high: 304, averaging_period: 1-hour}
+    - {category: Very Unhealthy, aqi_low: 201, aqi_high: 300, concentration_low: 305, concentration_high: 604, averaging_period: 24-hour}
+    - {category: Hazardous, aqi_low: 301, aqi_high: 500, concentration_low: 605, concentration_high: 1004, averaging_period: 24-hour}
+
+co:
+  name: Carbon monoxide
+  unit: ppm
+  default_averaging: 8-hour
+  decimals: 1
+  naaqs:
+    - level: 9
+      unit: ppm
+      averaging_period: 8-hour
+      form: Not to be exceeded more than once per year
+    - level: 35
+      unit: ppm
+      averaging_period: 1-hour
+      form: Not to be exceeded more than once per year
+  breakpoints:
+    - {category: Good, aqi_low: 0, aqi_high: 50, concentration_low: 0.0, concentration_high: 4.4, averaging_period: 8-hour}
+    - {category: Moderate, aqi_low: 51, aqi_high: 100, concentration_low: 4.5, concentration_high: 9.4, averaging_period: 8-hour}
+    - {category: Unhealthy for Sensitive Groups, aqi_low: 101, aqi_high: 150, concentration_low: 9.5, concentration_high: 12.4, averaging_period: 8-hour}
+    - {category: Unhealthy, aqi_low: 151, aqi_high: 200, concentration_low: 12.5, concentration_high: 15.4, averaging_period: 8-hour}
+    - {category: Very Unhealthy, aqi_low: 201, aqi_high: 300, concentration_low: 15.5, concentration_high: 30.4, averaging_period: 8-hour}
+    - {category: Hazardous, aqi_low: 301, aqi_high: 500, concentration_low: 30.5, concentration_high: 50.4, averaging_period: 8-hour}

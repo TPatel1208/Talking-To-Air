@@ -76,7 +76,7 @@ class _SwitchableTool:
 
 class MCPTransportCircuitBreakerTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        # A fresh per-turn state dict, exactly as stream_response binds it.
+        # A fresh per-turn state dict, bound as a turn would bind it.
         self._token = _mcp_failure_state.set({"consecutive": 0, "tripped": False})
 
     def tearDown(self):
@@ -186,7 +186,7 @@ class MCPTransportCircuitBreakerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_no_turn_context_is_never_circuit_broken(self):
         # The jobs/discovery endpoints call MCP tools with a user_id bound but
-        # no stream_response turn — get_mcp_failure_state() is None there, and
+        # no breaker state — get_mcp_failure_state() is None there, and
         # those callers must never be short-circuited by a chat turn's storm.
         _mcp_failure_state.reset(self._token)
         self._token = _mcp_failure_state.set(None)  # restored shape for tearDown

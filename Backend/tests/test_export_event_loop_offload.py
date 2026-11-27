@@ -186,7 +186,7 @@ class ChartCsvOffloadTests(unittest.IsolatedAsyncioTestCase):
         what is under test is everything *after* it."""
         from unittest.mock import AsyncMock
 
-        from tta_backend.preprocessing.aggregation_service import AggregationService
+        from tta_backend.domain.aggregation.aggregation_service import AggregationService
         from tta_backend.services.export_service import ExportService
 
         ticker = _Ticker()

@@ -392,8 +392,8 @@ class RetrievalPlaneAgreementTests(unittest.TestCase):
         resolver = RegionResolver()
         region_dispatch.assert_no_alias_collisions(resolver.global_regions)
 
-        # 39 pre-existing presets + 51 states, none shadowing another.
-        self.assertEqual(len(resolver.global_regions), 90)
+        # 42 pre-existing presets + 51 states, none shadowing another.
+        self.assertEqual(len(resolver.global_regions), 93)
         self.assertIn("georgia", resolver.global_regions)
         for coalition_id in region_dispatch.COALITIONS:
             self.assertNotIn(coalition_id, resolver.global_regions)

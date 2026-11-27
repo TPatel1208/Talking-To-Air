@@ -9,6 +9,14 @@ from typing import Any, AsyncIterator
 
 from tta_backend.models.artifact import ArtifactReference, TableArtifactPayload
 from tta_backend.repositories import artifact_repository
+from tta_backend.utils.csv_cells import safe_cell
+
+# Every table artifact's id starts with this; a chart's never does.
+TABLE_ID_PREFIX = "tbl_"
+
+
+def is_table_id(artifact_id: str) -> bool:
+    return artifact_id.startswith(TABLE_ID_PREFIX)
 
 
 @dataclass
@@ -45,7 +53,7 @@ class ArtifactStore:
         metadata: dict[str, Any] | None = None,
     ) -> ArtifactReference:
         self.cleanup()
-        artifact_id = f"tbl_{uuid.uuid4().hex[:12]}"
+        artifact_id = f"{TABLE_ID_PREFIX}{uuid.uuid4().hex[:12]}"
         payload = TableArtifactPayload(
             title=title,
             columns=columns,
@@ -120,7 +128,7 @@ class ArtifactStore:
         output.truncate(0)
 
         for row in stored.payload.rows:
-            writer.writerow(row)
+            writer.writerow({key: safe_cell(value) for key, value in row.items()})
             if output.tell() >= 64 * 1024:
                 yield output.getvalue().encode("utf-8")
                 output.seek(0)

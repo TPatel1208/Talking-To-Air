@@ -3,6 +3,7 @@ import {
   TERMINAL_STATUSES, statusBadge, primaryAction, upstreamLine,
   formatVariables, formatBbox, formatOutputFormat, formatTimeRange,
 } from '../utils/jobCard'
+import RunsSection from './RunsSection'
 
 const CONFIRM_TIMEOUT_MS = 4000
 
@@ -174,7 +175,10 @@ function JobRow({ job, onCancel, onViewResult }) {
   )
 }
 
-export default function JobsPanel({ jobs, error, onCancel, onRefresh, onViewResult }) {
+export default function JobsPanel({
+  jobs, error, onCancel, onRefresh, onViewResult,
+  runs = [], runsError = null, busy = false, onCancelRun, onContinueRun, onAnswerRun,
+}) {
   return (
     <div style={{
       flex:          1,
@@ -198,6 +202,14 @@ export default function JobsPanel({ jobs, error, onCancel, onRefresh, onViewResu
       </div>
 
       <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+        <RunsSection
+          runs={runs}
+          error={runsError}
+          busy={busy}
+          onCancel={onCancelRun}
+          onContinue={onContinueRun}
+          onAnswer={onAnswerRun}
+        />
         {error && (
           <div style={{ color: 'var(--error)', fontSize: '12px', padding: '4px 2px' }}>{error}</div>
         )}

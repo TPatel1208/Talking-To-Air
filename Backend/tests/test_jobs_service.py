@@ -26,7 +26,7 @@ class ListJobsTests(unittest.IsolatedAsyncioTestCase):
     async def _tools(self, handlers):
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
         from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         server = FakeEarthdataMCPServer(build_fake_mcp(handlers))
         server.start()
@@ -512,7 +512,7 @@ class CancelJobTests(unittest.IsolatedAsyncioTestCase):
     async def _tools(self, handlers):
         from fake_earthdata_mcp import build_fake_mcp, FakeEarthdataMCPServer
         from tta_backend.earthdata_mcp.client import load_raw_mcp_tools
-        from tta_backend.config.settings import Settings
+        from tta_backend.infrastructure.settings import Settings
 
         server = FakeEarthdataMCPServer(build_fake_mcp(handlers))
         server.start()

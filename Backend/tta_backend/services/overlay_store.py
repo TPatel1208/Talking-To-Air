@@ -21,9 +21,13 @@ import os
 import re
 import uuid
 from collections.abc import Iterable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from tta_backend.config.settings import get_settings
+from tta_backend.infrastructure.access_clock import stamp_access
+from tta_backend.infrastructure.settings import get_settings
+
+if TYPE_CHECKING:
+    import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +59,41 @@ def write_overlay(png_bytes: bytes) -> str:
     except BaseException:
         _remove(staging)
         raise
+    # A write is an access too, stamped on the same clock as reads.
+    _touch(path)
     return path
+
+
+def render_and_store(
+    lats: np.ndarray, lons: np.ndarray, arr: np.ndarray, lut: list[Any], vmin: float, vmax: float,
+) -> dict[str, Any]:
+    """Render the full-resolution overlay PNG and store it with the value
+    raster it was drawn from. Returns the overlay fields a payload records:
+    ``_path`` for the PNG and ``_values`` (``_path``, ``lo``, ``hi``) for the
+    raster the route recolours at a requested scale.
+
+    Returns ``{}`` when the render or its write fails: the chart keeps its
+    grid and the frontend draws from it. A raster that fails to store drops
+    only ``_values``. Never raises.
+    """
+    # Local: rasterio is a render-path import, and the API imports this module at startup.
+    from tta_backend.utils.overlay_render import render_overlay
+
+    try:
+        rendered = render_overlay(lats, lons, arr, lut, vmin, vmax)
+        fields: dict[str, Any] = {"_path": write_overlay(rendered.png)}
+    except Exception:
+        logger.warning("overlay_render_failed", exc_info=True)
+        return {}
+    raster = rendered.value_raster
+    if raster is not None:
+        try:
+            raster_path = write_overlay(raster.png)
+        except Exception:
+            logger.warning("overlay_value_raster_store_failed", exc_info=True)
+        else:
+            fields["_values"] = {"_path": raster_path, "lo": raster.lo, "hi": raster.hi}
+    return fields
 
 
 def read_overlay(stored_path: str) -> bytes | None:
@@ -149,9 +187,9 @@ def evict_to_fit(incoming_bytes: int) -> int:
     return evicted
 
 
-def _entries() -> list[tuple[float, int, str]]:
+def _entries() -> list[tuple[int, int, str]]:
     """``(last_access, bytes_on_disk, path)`` for every overlay in the store."""
-    out: list[tuple[float, int, str]] = []
+    out: list[tuple[int, int, str]] = []
     try:
         scanned = list(os.scandir(_store_root()))
     except OSError:
@@ -163,7 +201,7 @@ def _entries() -> list[tuple[float, int, str]]:
             stat = entry.stat(follow_symlinks=False)
         except OSError:
             continue
-        out.append((stat.st_mtime, stat.st_size, entry.path))
+        out.append((stat.st_mtime_ns, stat.st_size, entry.path))
     return out
 
 
@@ -184,7 +222,7 @@ def _remove(path: str) -> bool:
 
 def _touch(path: str) -> None:
     try:
-        os.utime(path, None)
+        stamp_access(path)
     except OSError:
         pass
 

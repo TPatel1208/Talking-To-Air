@@ -25,15 +25,21 @@ class DeleteSessionCascadeTests(unittest.IsolatedAsyncioTestCase):
             yield conn
 
         with patch("tta_backend.repositories.session_repository.session_belongs_to_user", AsyncMock(return_value=True)), \
+             patch("tta_backend.repositories.session_repository.delete_harness_records", AsyncMock()), \
              patch("tta_backend.repositories.session_repository.delete_session_metadata", AsyncMock(return_value=True)), \
              patch("tta_backend.repositories.session_repository.delete_charts_for_session", AsyncMock(return_value=[])) as delete_charts, \
              patch("tta_backend.repositories.session_repository.delete_artifacts_for_session", AsyncMock()) as delete_artifacts, \
+             patch("tta_backend.repositories.session_repository.delete_transcript", AsyncMock()) as delete_transcript, \
              patch("tta_backend.repositories.session_repository.pg_connection", _pg_connection_cm):
             deleted = await SessionRepository().delete_session("thread-1", "user-1")
 
         self.assertTrue(deleted)
         delete_charts.assert_awaited_once_with("thread-1", "user-1")
         delete_artifacts.assert_awaited_once_with("thread-1", "user-1")
+        delete_transcript.assert_awaited_once_with("thread-1", "user-1")
+        # The thread's checkpoints and the supervisor's checkpoints for it.
+        threads = {tuple(call.args[1][0]) for call in conn.execute.await_args_list}
+        self.assertEqual(threads, {("thread-1", "supervisor/user-1/thread-1")})
 
     async def test_delete_session_skips_cascade_when_session_not_found(self):
         from tta_backend.repositories.session_repository import SessionRepository
@@ -46,6 +52,40 @@ class DeleteSessionCascadeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(deleted)
         delete_charts.assert_not_awaited()
         delete_artifacts.assert_not_awaited()
+
+
+class DeleteSessionHarnessTests(unittest.IsolatedAsyncioTestCase):
+    async def test_the_sessions_harness_records_are_deleted_before_its_ownership_row(self):
+        from contextlib import asynccontextmanager
+
+        from tta_backend.repositories.session_repository import SessionRepository
+
+        calls: list[str] = []
+        conn = MagicMock()
+        conn.execute = AsyncMock()
+        conn.commit = AsyncMock()
+
+        @asynccontextmanager
+        async def _cm(*args, **kwargs):
+            yield conn
+
+        def record(name, result=None):
+            async def _inner(*args, **kwargs):
+                calls.append(name)
+                return result
+            return _inner
+
+        with patch("tta_backend.repositories.session_repository.session_belongs_to_user", AsyncMock(return_value=True)), \
+             patch("tta_backend.repositories.session_repository.delete_harness_records", AsyncMock(side_effect=record("harness"))) as harness, \
+             patch("tta_backend.repositories.session_repository.delete_charts_for_session", AsyncMock(side_effect=record("charts", []))), \
+             patch("tta_backend.repositories.session_repository.delete_artifacts_for_session", AsyncMock()), \
+             patch("tta_backend.repositories.session_repository.delete_transcript", AsyncMock()), \
+             patch("tta_backend.repositories.session_repository.delete_session_metadata", AsyncMock(side_effect=record("metadata", True))), \
+             patch("tta_backend.repositories.session_repository.pg_connection", _cm):
+            self.assertTrue(await SessionRepository().delete_session("thread-1", "user-1"))
+
+        harness.assert_awaited_once_with("thread-1", "user-1")
+        self.assertEqual(calls, ["harness", "charts", "metadata"])
 
 
 class DeleteSessionOwnershipOrderingTests(unittest.IsolatedAsyncioTestCase):
@@ -79,9 +119,11 @@ class DeleteSessionOwnershipOrderingTests(unittest.IsolatedAsyncioTestCase):
         conn.commit = AsyncMock()
 
         with patch("tta_backend.repositories.session_repository.session_belongs_to_user", AsyncMock(return_value=True)), \
+             patch("tta_backend.repositories.session_repository.delete_harness_records", AsyncMock()), \
              patch("tta_backend.repositories.session_repository.delete_session_metadata", AsyncMock(return_value=True)) as delete_metadata, \
              patch("tta_backend.repositories.session_repository.delete_charts_for_session", AsyncMock(side_effect=RuntimeError("connection reset"))), \
              patch("tta_backend.repositories.session_repository.delete_artifacts_for_session", AsyncMock()), \
+             patch("tta_backend.repositories.session_repository.delete_transcript", AsyncMock()), \
              patch("tta_backend.repositories.session_repository.pg_connection", self._pg_connection_cm(conn)):
             with self.assertRaises(RuntimeError):
                 await SessionRepository().delete_session("thread-1", "user-1")
@@ -112,8 +154,10 @@ class DeleteSessionOwnershipOrderingTests(unittest.IsolatedAsyncioTestCase):
             return _inner
 
         with patch("tta_backend.repositories.session_repository.session_belongs_to_user", AsyncMock(return_value=True)), \
+             patch("tta_backend.repositories.session_repository.delete_harness_records", AsyncMock()), \
              patch("tta_backend.repositories.session_repository.delete_charts_for_session", AsyncMock(side_effect=record("charts", []))), \
              patch("tta_backend.repositories.session_repository.delete_artifacts_for_session", AsyncMock(side_effect=record("artifacts"))), \
+             patch("tta_backend.repositories.session_repository.delete_transcript", AsyncMock()), \
              patch("tta_backend.repositories.session_repository.delete_session_metadata", AsyncMock(side_effect=record("metadata"))) as delete_metadata, \
              patch("tta_backend.repositories.session_repository.pg_connection", self._pg_connection_cm(conn)):
             deleted = await SessionRepository().delete_session("thread-1", "user-1")
@@ -146,8 +190,10 @@ class DeleteSessionOwnershipOrderingTests(unittest.IsolatedAsyncioTestCase):
             return []
 
         with patch("tta_backend.repositories.session_repository.session_belongs_to_user", AsyncMock(return_value=True)), \
+             patch("tta_backend.repositories.session_repository.delete_harness_records", AsyncMock()), \
              patch("tta_backend.repositories.session_repository.delete_charts_for_session", AsyncMock(side_effect=record_charts)), \
              patch("tta_backend.repositories.session_repository.delete_artifacts_for_session", AsyncMock()), \
+             patch("tta_backend.repositories.session_repository.delete_transcript", AsyncMock()), \
              patch("tta_backend.repositories.session_repository.delete_session_metadata", AsyncMock(return_value=True)), \
              patch("tta_backend.repositories.session_repository.pg_connection", self._pg_connection_cm(conn)):
             await SessionRepository().delete_session("thread-1", "user-1")
@@ -165,7 +211,7 @@ class DeleteSessionOverlayTests(unittest.IsolatedAsyncioTestCase):
         import os
         import tempfile
 
-        from tta_backend.config.settings import get_settings
+        from tta_backend.infrastructure.settings import get_settings
 
         store = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(store.cleanup)
@@ -193,8 +239,10 @@ class DeleteSessionOverlayTests(unittest.IsolatedAsyncioTestCase):
         from tta_backend.repositories.session_repository import SessionRepository
 
         with patch("tta_backend.repositories.session_repository.session_belongs_to_user", AsyncMock(return_value=True)), \
+             patch("tta_backend.repositories.session_repository.delete_harness_records", AsyncMock()), \
              patch("tta_backend.repositories.session_repository.delete_charts_for_session", delete_charts), \
              patch("tta_backend.repositories.session_repository.delete_artifacts_for_session", AsyncMock()), \
+             patch("tta_backend.repositories.session_repository.delete_transcript", AsyncMock()), \
              patch("tta_backend.repositories.session_repository.delete_session_metadata", AsyncMock(return_value=True)), \
              patch("tta_backend.repositories.session_repository.pg_connection", self._pg_connection_cm()):
             return await SessionRepository().delete_session("thread-1", "user-1")

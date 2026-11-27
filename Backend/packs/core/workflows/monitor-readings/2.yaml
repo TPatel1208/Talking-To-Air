@@ -1,0 +1,78 @@
+name: monitor-readings
+version: 2
+status: draft
+description: EPA AQS monitors near an area for a pollutant and dates, shown as a time series, monitor map or table, with exceedance days.
+examples:
+  - What were the daily ozone readings at monitors near Newark in July 2024?
+  - Map PM2.5 monitors across New Jersey for 2024-06-10 to 2024-06-20.
+  - Which days did monitors in Harris County exceed the ozone standard in August 2024?
+
+inputs:
+  pollutant: {type: choice, options: [o3, pm25, pm10, no2, so2, co], ask: "Which pollutant?"}
+  area:      {type: area, ask: "Which area?"}
+  dates:     {type: date_range, ask: "Which dates?"}
+  # series: daily lines; map: monitors by AQI category; table: daily summaries; exceedances: the days above the standard.
+  view:      {type: choice, options: [series, map, table, exceedances], default: series}
+
+steps:
+  - id: find
+    use: sources.monitors.find
+    with: {pollutant: $pollutant, start: $dates.start, end: $dates.end, area: $area}
+
+  - id: readings
+    use: sources.monitors.readings
+    when: 'view == "series"'
+    with: {pollutant: $pollutant, start: $dates.start, end: $dates.end, points: $find}
+  - id: figure_series
+    use: render.timeseries
+    with: {series: [$readings]}
+  # The readings themselves, so the answer can state the level asked about.
+  - id: reading_mean
+    use: operations.statistic
+    with: {data: $readings, stat: mean}
+  - id: reading_max
+    use: operations.statistic
+    with: {data: $readings, stat: max}
+
+  - id: summary
+    use: sources.monitors.daily_summary
+    when: 'view == "map" or view == "table"'
+    with: {pollutant: $pollutant, start: $dates.start, end: $dates.end, points: $find}
+  - id: figure_map
+    use: render.monitor_map
+    when: 'view == "map"'
+    with: {data: $summary, pollutant: $pollutant}
+  - id: figure_table
+    use: render.table
+    when: 'view == "table"'
+    with: {table: $summary}
+
+  # Optional: a request too large for AQS becomes a stated gap and the rest still runs.
+  - id: exceedances
+    use: sources.monitors.exceedance_days
+    required: false
+    with: {pollutant: $pollutant, start: $dates.start, end: $dates.end, points: $find}
+  - id: figure_exceedances
+    use: render.table
+    when: 'view == "exceedances"'
+    with: {table: $exceedances}
+
+outputs:
+  findings:
+    - {name: monitors_found, value: $find.summary.monitors, unit: monitors}
+    - {name: reading_mean, value: $reading_mean.summary.value, unit: $readings.unit, optional: true}
+    - {name: reading_max, value: $reading_max.summary.value, unit: $readings.unit, optional: true}
+    - {name: exceedance_days, value: $exceedances.summary.exceedance_days, unit: days, optional: true}
+    - {name: monitor_days_exceeding, value: $exceedances.summary.monitor_days_exceeding, unit: monitor-days, optional: true}
+    - {name: naaqs_level, value: $exceedances.level, unit: $exceedances.unit, optional: true}
+    - {name: highest_exceeding_value, value: $exceedances.summary.max, unit: $exceedances.unit, optional: true}
+  figures:
+    - {from: $figure_series, optional: true}
+    - {from: $figure_map, optional: true}
+    - {from: $figure_table, optional: true}
+    - {from: $figure_exceedances, optional: true}
+  data:
+    - $find
+    - {from: $readings, optional: true}
+    - {from: $summary, optional: true}
+    - {from: $exceedances, optional: true}

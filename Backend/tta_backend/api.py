@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.security.utils import get_authorization_scheme_param
-from pydantic import BaseModel, Field, StringConstraints
+from pydantic import BaseModel, Field, JsonValue, StringConstraints, field_validator, model_validator
 from redis import asyncio as aioredis
 from redis.exceptions import RedisError
 from starlette.routing import Match
@@ -24,11 +24,8 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
-from tta_backend.agents.earthdata_agent import LazySatelliteAgent, build_earthdata_agent, refresh_live_tools
-from tta_backend.agents.ground_sensor_agent import build_ground_agent
-from tta_backend.agents.supervisor_agent import build_agent
 from tta_backend.config.connectors import CONNECTOR_REGISTRY, CONNECTOR_REGISTRY_BY_TYPE
-from tta_backend.config.settings import get_settings
+from tta_backend.infrastructure.settings import get_settings
 from tta_backend.config.starter_prompts import STARTER_PROMPTS, StarterPrompt
 from tta_backend.earthdata_mcp.connection import STATE_CONNECTING, STATE_READY, EarthdataMCPConnectionManager
 from tta_backend.earthdata_mcp.results import (
@@ -69,10 +66,20 @@ from tta_backend.services.connector_credential_service import (
 )
 from tta_backend.services.connector_token_service import TokenValidationError, decode_token_expiry
 from tta_backend.services.artifact_store import artifact_store
-from tta_backend.services.chat_stream_service import ChatStreamService
-from tta_backend.services.chart_service import ChartService
+from tta_backend.harness.handles.model import is_derived_id
+from tta_backend.services.chart_service import ChartLink, ChartService
 from tta_backend.services.export_service import ExportService, hold_admission, materialize_first_chunk
-from tta_backend.services.history_service import HistoryService
+from tta_backend.services.harness_chat import HarnessChat, build_harness_chat, transcript_history
+from tta_backend.services import paused_runs
+from tta_backend.services.harness_host import McpEarthdataSession
+from tta_backend.services.payload_figures import chart_rows, csv_bytes, figure_png
+from tta_backend.services.result_export import (
+    NO_DATA_SERVICE,
+    ResultExporter,
+    ResultNotFound,
+    chart_citations,
+    chart_provenance,
+)
 from tta_backend.services.data_download_service import DataDownloadError, export_converted, iter_file_chunks
 from tta_backend.services.discovery_service import (
     check_coverage,
@@ -94,31 +101,32 @@ from tta_backend.services.methods_export_service import build_methods_markdown
 from tta_backend.services.provenance_service import get_citations, get_lineage
 from cryptography.fernet import MultiFernet
 
-from tta_backend.utils.connector_crypto import encrypt_secret, get_connector_cipher
+from tta_backend.infrastructure.connector_crypto import encrypt_secret, get_connector_cipher
 from tta_backend.utils.db import active_pool_connections, check_db_pool, close_db_pool, init_db_pool, validate_config
-from tta_backend.utils.logging import configure_logging
-from tta_backend.utils.metrics import (
+from tta_backend.infrastructure.logging import configure_logging
+from tta_backend.infrastructure.metrics import (
     observe_http_request,
     prometheus_content_type,
-    refresh_process_gauges,
     render_prometheus_metrics,
     set_db_pool_connections_active,
 )
-from tta_backend.tools.ground_sensor_tools.epa_aqs_tools import (
+from tta_backend.utils.process_gauges import refresh_process_gauges
+from tta_backend.domain.monitors.aqs import (
+    AqsCredential,
     AqsCredentialsRejected,
     AqsUnavailable,
-    validate_aqs_credentials,
+    validate_credentials,
 )
 from tta_backend.utils.streaming import current_user_id, iter_with_user_id, user_id_context
 
-agent = None
+# The chat host every message goes through, built in the lifespan.
+agent: HarnessChat | None = None
 settings = get_settings()
 configure_logging(settings)
 logger = logging.getLogger(__name__)
 
 chart_service = ChartService()
 export_service = ExportService(settings.csv_export_max_granules)
-history_service = HistoryService(chart_service)
 session_repository = SessionRepository()
 # Constructed at import time so tests can patch the verifier before requests.
 # validate_config() runs during lifespan before any request is served, so a missing
@@ -129,39 +137,31 @@ supabase_verifier = SupabaseJwtVerifier(make_jwks_fetcher(settings.supabase_url 
 
 async def _on_earthdata_mcp_ready(tools: dict[str, Any]) -> None:
     """earthdata_mcp_manager's on_ready hook: refreshes the persistent
-    app.state.earthdata_mcp_tools dict (read directly by the chart export.png
-    endpoint; export.csv/.nc go through the readiness gate) and rebuilds the real satellite agent into whatever LazySatelliteAgent the
-    current lifespan cycle assigned to app.state.satellite_agent — see
-    agents/earthdata_agent.py for why a mutable placeholder, not a reassigned
-    reference, is what makes this visible to the supervisor's already-built
-    dispatch tool closure.
+    app.state.earthdata_mcp_tools dict, read by the chart export.png endpoint
+    and by every chat turn's earthdata session.
 
-    In-flight recovery: if the MCP server restarts, the manager reconnects and
-    re-fires this hook with the new session's tools. Refresh the tools dict IN PLACE (refresh_live_tools)
-    and rebuild the agent bound to that SAME dict — so a chat turn compiled
-    against it before the restart (an in-flight compare mid-retry) reads the
-    reconnected tools on its next call instead of retrying the dead session. See
-    refresh_live_tools for the call-time-indexing contract this relies on."""
+    The dict is updated in place, never replaced, so a turn already running
+    when the MCP server restarts reads the reconnected tools on its next
+    call. Entries are added before stale ones are dropped, so no key a
+    reader is indexing disappears in between."""
     live = app.state.earthdata_mcp_tools
     if live is None:  # a late callback racing lifespan shutdown — nothing to refresh
         return
-    refresh_live_tools(live, tools)
-    app.state.satellite_agent.set_real(build_earthdata_agent(mcp_tools=live))
-    logger.info("earthdata_mcp_satellite_agent_ready", extra={"_event": "earthdata_mcp_satellite_agent_ready"})
+    live.update(tools)
+    for stale in [key for key in live if key not in tools]:
+        del live[stale]
+    logger.info("earthdata_mcp_tools_ready", extra={"_event": "earthdata_mcp_tools_ready"})
 
 
 # One shared instance -- its in-process cache and per-turn
 # last_used_at coalescing are only meaningful as process-lifetime state, and
 # the connector endpoints below invalidate it directly on re-paste/disconnect.
 edl_credential_injector = EdlCredentialInjector(settings)
-# The same instance epa_aqs_tools resolves through, so invalidating it here
-# reaches the AQS client.
+# The same instance the chat host resolves monitor credentials through, so
+# invalidating it here reaches the next monitor call.
 aqs_credential_injector = get_aqs_credential_injector()
 earthdata_mcp_manager = EarthdataMCPConnectionManager(
     settings, current_user_id, on_ready=_on_earthdata_mcp_ready, edl_injector=edl_credential_injector,
-)
-chat_stream_service = ChatStreamService(
-    chart_service, settings.long_request_seconds, earthdata_mcp_manager, settings.chat_turn_timeout_seconds,
 )
 
 
@@ -216,11 +216,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # The backend boots without the earthdata-retrieval MCP — ground/EPA
     # features work immediately. earthdata_mcp_manager connects in the
     # background (capped exponential backoff); misconfiguration (a malformed URL) still fails loud
-    # from validate_config() above, before any of this runs. satellite_agent
-    # is a LazySatelliteAgent placeholder — services.subagent_dispatch
-    # .run_satellite gates on earthdata_mcp_manager.state before ever
-    # touching it, so it's never invoked before _on_earthdata_mcp_ready
-    # (module scope) fills it in.
+    # from validate_config() above, before any of this runs. A chat turn
+    # started before it is ready still runs: its satellite sources fail as
+    # temporarily unavailable.
     # One Redis pool behind both. The log writes a turn's frames and the
     # registry holds the per-thread claim and the idempotency records — same
     # Redis, and no reason for two sets of connections to it.
@@ -231,19 +229,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     app.state.earthdata_mcp_tools = {}
     app.state.earthdata_mcp_manager = earthdata_mcp_manager
-    app.state.satellite_agent = LazySatelliteAgent()
     earthdata_mcp_manager.start()
 
-    # Built once here (not inside build_agent) so the supervisor's tool
-    # wrappers and the router fast path (services/chat_stream_service.py)
-    # invoke the identical sub-agent instances.
-    ground_agent = build_ground_agent()
-    app.state.ground_agent = ground_agent
-    agent = await build_agent(
-        settings.llm_model,
-        ground_agent=ground_agent,
-        satellite_agent=app.state.satellite_agent,
+    # Every chat message goes through this one host.
+    agent = await build_harness_chat(
+        settings,
         mcp_manager=earthdata_mcp_manager,
+        live_tools=app.state.earthdata_mcp_tools,
+        chart_service=chart_service,
+        edl=edl_credential_injector,
+        aqs=aqs_credential_injector,
     )
     app.state.agent = agent
     logger.info("startup_complete")
@@ -257,8 +252,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await supabase_verifier.stop_warm()
         agent = None
         app.state.agent = None
-        app.state.ground_agent = None
-        app.state.satellite_agent = None
         app.state.earthdata_mcp_tools = None
         app.state.earthdata_mcp_manager = None
         # The registry cancels whatever turns are still running; the log
@@ -418,6 +411,8 @@ PUBLIC_ENDPOINTS = {
     ("GET", "/config/auth"),
 }
 ThreadId = Annotated[str, Path(pattern=r"^[A-Za-z0-9-]+$")]
+ThreadIdQuery = Annotated[str, Query(min_length=1, pattern=r"^[A-Za-z0-9-]+$")]
+RunId = Annotated[str, Path(pattern=r"^run_[0-9a-f]{32}$")]
 JobHandle = Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]+$")]
 DatasetHandle = Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]+$")]
 ConnectorType = Annotated[str, Path(pattern=r"^[a-z0-9_-]+$")]
@@ -562,9 +557,47 @@ app.add_middleware(
 )
 
 
+# The largest answer value the question control may send, as JSON text.
+MAX_ANSWER_JSON_CHARS = 20_000
+
+
+class ChatAnswer(BaseModel):
+    """An answer from the app's question control to the question a paused run waits on."""
+
+    run_id: str = Field(pattern=r"^run_[0-9a-f]{32}$")
+    step: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$")
+    value: JsonValue
+
+    @field_validator("value")
+    @classmethod
+    def _bounded(cls, value: JsonValue) -> JsonValue:
+        # No question takes null, and the runner reads a missing answer as none given.
+        if value is None:
+            raise ValueError("the answer has no value")
+        if len(json.dumps(value)) > MAX_ANSWER_JSON_CHARS:
+            raise ValueError(f"the answer is longer than {MAX_ANSWER_JSON_CHARS} characters as JSON")
+        return value
+
+
+class ChatResume(BaseModel):
+    """A request to continue a waiting run whose retrieval jobs are finished."""
+
+    run_id: str = Field(pattern=r"^run_[0-9a-f]{32}$")
+
+
 class ChatRequest(BaseModel):
+    # With an answer, the picked option's text, which the transcript records as the user's message;
+    # with a resume, the fixed text of the request.
     message: str = Field(min_length=1, max_length=10_000)
     thread_id: Optional[str] = Field(default=None, min_length=1, pattern=r"^[A-Za-z0-9-]+$")
+    answer: Optional[ChatAnswer] = None
+    resume: Optional[ChatResume] = None
+
+    @model_validator(mode="after")
+    def _one_request(self) -> "ChatRequest":
+        if self.answer is not None and self.resume is not None:
+            raise ValueError("a message carries an answer or a resume, not both")
+        return self
 
 
 class DiscoverySearchRequest(BaseModel):
@@ -696,6 +729,13 @@ async def set_connector_token_endpoint(connector_type: ConnectorType, req: SetCo
     )
     _invalidate_connector_cache(connector_type, request.state.current_user.id)
     return _connector_view(entry, row)
+
+
+async def validate_aqs_credentials(email: str, key: str) -> None:
+    """One live EPA call on the pair, never answered from the cache.
+
+    Raises AqsCredentialsRejected for a bad pair, AqsUnavailable when EPA gives no verdict."""
+    await validate_credentials(AqsCredential(email, key))
 
 
 @app.put("/connectors/{connector_type}/credentials")
@@ -872,8 +912,8 @@ async def _handle_admission_overloaded(request: Request, exc: Exception) -> JSON
 
     Only the request/response endpoints reach here. The chat path raises the
     same exception from inside an already-committed SSE stream, where no status
-    code is available any more; ``ChatStreamService._overloaded_events`` ends
-    that turn instead.
+    code is available any more; the chat host (services/harness_chat.py) ends
+    that turn with an error frame instead.
 
     503 with ``Retry-After`` rather than 429: this is not the caller being too
     frequent -- their own rate limit is untouched and a retry may well be
@@ -959,13 +999,17 @@ def _earthdata_tools(request: Request) -> dict[str, Any]:
 
 @app.get("/chart/{chart_id}/export.csv")
 @limiter.limit("3/minute")
-async def export_chart_csv(chart_id: str, request: Request) -> StreamingResponse:
+async def export_chart_csv(chart_id: str, request: Request) -> Response:
+    payload = await _get_owned_chart(chart_id, request.state.current_user.id)
+    link = ChartLink.of(payload)
+    if link is not None:
+        # Written from the payload alone, so it needs no data service.
+        return await _harness_chart_csv(payload, link)
     # Resolved through the readiness gate (shared structured 503),
     # never app.state.earthdata_mcp_tools directly — a not-ready MCP must
     # fail here, before any 200 header is committed, not inside the
     # StreamingResponse generator.
     tools = _earthdata_tools(request)
-    payload = await _get_owned_chart(chart_id, request.state.current_user.id)
     if not payload.get("export"):
         raise HTTPException(status_code=422, detail="This chart does not include full-resolution export metadata.")
 
@@ -1000,10 +1044,44 @@ async def export_chart_csv(chart_id: str, request: Request) -> StreamingResponse
     )
 
 
+def _not_exported(link: ChartLink, what: str) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=f"{what} The archive of the result that drew it, /result/{link.run_id}/export.zip, holds its methods, "
+        "provenance and the data the result kept.",
+    )
+
+
+async def _harness_chart_csv(payload: dict[str, Any], link: ChartLink) -> Response:
+    """A harness chart's CSV, from the data its payload holds in full: a time series's lines or a profile's layers."""
+    rows = await chart_rows(payload)
+    if rows is None:
+        raise _not_exported(link, f"A {payload.get('type') or 'chart'} chart drawn by a harness run has no CSV export.")
+    return Response(
+        content=csv_bytes(rows),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{export_service.safe_export_name(payload, "csv")}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
 @app.get("/chart/{chart_id}/export.png")
 @limiter.limit("20/minute")
 async def export_chart_png(chart_id: str, request: Request) -> Response:
     payload = await _get_owned_chart(chart_id, request.state.current_user.id)
+    link = ChartLink.of(payload)
+    if link is not None:
+        # Drawn from the payload, since the chart may render a handle the data service cannot open.
+        content = await figure_png(payload)
+        if content is None:
+            raise _not_exported(link, f"A {payload.get('type') or 'chart'} chart drawn by a harness run is not drawn as PNG.")
+        return Response(
+            content=content,
+            media_type="image/png",
+            headers={"Content-Disposition": f'attachment; filename="{export_service.safe_export_name(payload, "png")}"'},
+        )
     try:
         with user_id_context(request.state.current_user.id):
             # Gated like the CSV export and for the same reason: _render_png
@@ -1218,28 +1296,43 @@ def _frame_blob_response(blob: frame_store.FrameBlob, request: Request) -> Respo
 @app.get("/chart/{chart_id}/provenance")
 @limiter.limit("30/minute")
 async def chart_provenance_endpoint(chart_id: str, request: Request) -> dict[str, Any]:
-    tools = _earthdata_tools(request)
-    payload = await _get_owned_chart(chart_id, request.state.current_user.id)
-    source_handles = _chart_source_handles(payload)
-    with user_id_context(request.state.current_user.id):
-        return await get_lineage(source_handles, tools)
+    user_id = request.state.current_user.id
+    payload = await _get_owned_chart(chart_id, user_id)
+    link = ChartLink.of(payload)
+    with user_id_context(user_id):
+        if link is not None:
+            # The harness's lineage walks derived handles, which the data service does not know; without the
+            # data service the retrieved data's own lineage is left out and the answer says so.
+            return await chart_provenance(_harness(request).stores, user_id, link, _data_service(request))
+        tools = _earthdata_tools(request)
+        return await get_lineage(_chart_source_handles(payload), tools)
 
 
 @app.get("/chart/{chart_id}/citations")
 @limiter.limit("30/minute")
 async def chart_citations_endpoint(chart_id: str, request: Request) -> dict[str, Any]:
-    tools = _earthdata_tools(request)
-    payload = await _get_owned_chart(chart_id, request.state.current_user.id)
-    source_handles = _chart_source_handles(payload)
-    with user_id_context(request.state.current_user.id):
-        return {"citations": await get_citations(source_handles, tools)}
+    user_id = request.state.current_user.id
+    payload = await _get_owned_chart(chart_id, user_id)
+    link = ChartLink.of(payload)
+    with user_id_context(user_id):
+        if link is not None:
+            # Without the data service a harness chart has no citations to give, and the answer says so.
+            earthdata = _data_service(request)
+            citations = await chart_citations(_harness(request).stores, user_id, link, earthdata)
+            return {"citations": citations} if earthdata is not None else {"citations": citations, "note": NO_DATA_SERVICE}
+        tools = _earthdata_tools(request)
+        return {"citations": await get_citations(_chart_source_handles(payload), tools)}
 
 
 @app.get("/chart/{chart_id}/methods.md")
 @limiter.limit("20/minute")
 async def chart_methods_endpoint(chart_id: str, request: Request) -> Response:
-    tools = _earthdata_tools(request)
     payload = await _get_owned_chart(chart_id, request.state.current_user.id)
+    link = ChartLink.of(payload)
+    if link is not None:
+        # A harness chart's methods are those of the result that drew it.
+        return await _result_methods_response(request, link.run_id, export_service.safe_export_name(payload, "md"))
+    tools = _earthdata_tools(request)
     source_handles = _chart_source_handles(payload)
     with user_id_context(request.state.current_user.id):
         lineage = await get_lineage(source_handles, tools)
@@ -1286,13 +1379,18 @@ async def chart_methods_endpoint(chart_id: str, request: Request) -> Response:
 @app.get("/chart/{chart_id}/export.nc")
 @limiter.limit("3/minute")
 async def export_chart_netcdf(chart_id: str, request: Request) -> StreamingResponse:
-    # Same readiness gate (shared structured 503) as every other
-    # MCP-backed endpoint, instead of a bespoke bare-detail 503.
-    tools = _earthdata_tools(request)
     payload = await _get_owned_chart(chart_id, request.state.current_user.id)
     source_handles = _chart_source_handles(payload)
     if not source_handles:
         raise HTTPException(status_code=422, detail="This chart does not include a source handle to export.")
+    link = ChartLink.of(payload)
+    if link is not None and is_derived_id(source_handles[0]):
+        raise _not_exported(
+            link, "This chart shows data the backend derived, which the data service cannot convert to NetCDF.",
+        )
+    # Same readiness gate (shared structured 503) as every other
+    # MCP-backed endpoint, instead of a bespoke bare-detail 503.
+    tools = _earthdata_tools(request)
 
     try:
         with user_id_context(request.state.current_user.id):
@@ -1321,6 +1419,87 @@ async def export_chart_netcdf(chart_id: str, request: Request) -> StreamingRespo
             # download for it to spool.
             "X-Accel-Buffering": "no",
         },
+    )
+
+
+# A result's export. Each reads the run as the requesting user, so another
+# user's run is a 404 exactly as a missing one is.
+
+RunIdPath = Annotated[str, Path(min_length=1, max_length=64)]
+
+
+def _harness(request: Request) -> HarnessChat:
+    host: HarnessChat | None = getattr(request.app.state, "agent", None)
+    if host is None:
+        raise HTTPException(status_code=503, detail="The server is starting. Try again in a moment.")
+    return host
+
+
+def _data_service(request: Request) -> McpEarthdataSession | None:
+    """The data service for lineage and citations, or None while it is not connected."""
+    manager = getattr(request.app.state, "earthdata_mcp_manager", None)
+    if manager is None or manager.state != STATE_READY:
+        return None
+    return McpEarthdataSession(manager.tools)
+
+
+def _result_exporter(request: Request) -> ResultExporter:
+    host = _harness(request)
+    return ResultExporter(
+        host.stores, chart_service=host.chart_service, artifacts=artifact_store, payload_root=host.payload_root,
+        earthdata=_data_service(request),
+    )
+
+
+async def _result_methods_response(request: Request, run_id: str, filename: str) -> Response:
+    user_id = request.state.current_user.id
+    try:
+        with user_id_context(user_id):
+            markdown = await _result_exporter(request).methods(user_id, run_id)
+    except ResultNotFound as exc:
+        raise HTTPException(status_code=404, detail="Result not found") from exc
+    return Response(
+        content=markdown,
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="methods-{filename}"', "Cache-Control": "no-store"},
+    )
+
+
+@app.get("/result/{run_id}/methods.md")
+@limiter.limit("20/minute")
+async def result_methods_endpoint(run_id: RunIdPath, request: Request) -> Response:
+    return await _result_methods_response(request, run_id, f"{run_id}.md")
+
+
+@app.get("/result/{run_id}/provenance.json")
+@limiter.limit("20/minute")
+async def result_provenance_endpoint(run_id: RunIdPath, request: Request) -> Response:
+    user_id = request.state.current_user.id
+    try:
+        with user_id_context(user_id):
+            provenance = await _result_exporter(request).provenance(user_id, run_id)
+    except ResultNotFound as exc:
+        raise HTTPException(status_code=404, detail="Result not found") from exc
+    return Response(
+        content=json.dumps(provenance, indent=2, default=str),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="provenance-{run_id}.json"', "Cache-Control": "no-store"},
+    )
+
+
+@app.get("/result/{run_id}/export.zip")
+@limiter.limit("6/minute")
+async def result_archive_endpoint(run_id: RunIdPath, request: Request) -> Response:
+    user_id = request.state.current_user.id
+    try:
+        with user_id_context(user_id):
+            content = await _result_exporter(request).archive(user_id, run_id)
+    except ResultNotFound as exc:
+        raise HTTPException(status_code=404, detail="Result not found") from exc
+    return Response(
+        content=content,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="result-{run_id}.zip"', "Cache-Control": "no-store"},
     )
 
 
@@ -1379,6 +1558,37 @@ async def cancel_job_endpoint(job_handle: JobHandle, request: Request) -> dict[s
     tools = _earthdata_tools(request)
     with user_id_context(request.state.current_user.id):
         return await cancel_job(job_handle, tools)
+
+
+def _runs_host() -> HarnessChat:
+    host = getattr(app.state, "agent", None) or agent
+    if host is None:
+        raise HTTPException(status_code=503, detail="Agent is not ready")
+    return cast(HarnessChat, host)
+
+
+@app.get("/runs")
+@limiter.limit("60/minute")
+async def get_runs(request: Request, thread_id: ThreadIdQuery) -> dict[str, Any]:
+    """The caller's runs in the conversation that wait on an answer or on their retrieval jobs."""
+    host = _runs_host()
+    try:
+        return {"runs": await paused_runs.list_paused_runs(host, thread_id, request.state.current_user.id)}
+    except paused_runs.RunsUnavailable:
+        raise HTTPException(status_code=503, detail="Runs are not available") from None
+
+
+@app.post("/runs/{run_id}/cancel")
+@limiter.limit("20/minute")
+async def cancel_run_endpoint(run_id: RunId, request: Request) -> dict[str, Any]:
+    """Cancel a paused run. Its provider jobs keep running."""
+    host = _runs_host()
+    try:
+        return await paused_runs.cancel_paused_run(host, request.state.current_user.id, run_id)
+    except paused_runs.RunNotPaused:
+        raise HTTPException(status_code=404, detail="Run not found") from None
+    except paused_runs.RunsUnavailable:
+        raise HTTPException(status_code=503, detail="Runs are not available") from None
 
 
 @app.post("/discovery/search")
@@ -1453,14 +1663,12 @@ async def chat(req: ChatRequest, request: Request) -> Response:
     active_agent = getattr(app.state, "agent", None) or agent
     if active_agent is None:
         raise HTTPException(status_code=503, detail="Agent is not ready")
-    ground_agent = getattr(app.state, "ground_agent", None)
-    satellite_agent = getattr(app.state, "satellite_agent", None)
     thread_id = await _resolve_thread(req, user.id)
     request_id = str(uuid.uuid4())
     await _save_session_metadata(thread_id, req.message, user.id, request_id)
     frames = _stamp_activity_on_first_frame(
-        chat_stream_service.stream_chat_events(
-            active_agent, ground_agent, satellite_agent, req.message, thread_id, user.id, request_id,
+        active_agent.stream_chat_events(
+            req.message, thread_id, user.id, request_id, **_paused_run_request(req),
         ),
         thread_id,
         request_id,
@@ -1488,6 +1696,15 @@ async def chat(req: ChatRequest, request: Request) -> Response:
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+def _paused_run_request(req: ChatRequest) -> dict[str, Any]:
+    """The answer or resume the chat request carries, for the host; nothing for a plain message."""
+    if req.answer is not None:
+        return {"answer": req.answer}
+    if req.resume is not None:
+        return {"resume": req.resume}
+    return {}
 
 
 def _job_canceller(user_id: str) -> turn_registry.CancelJobs:
@@ -1641,13 +1858,11 @@ async def _stamp_activity_on_first_frame(
     The metadata row above is written before anything runs because it is the
     only record of who owns the thread, and both ``/chat/{thread}/stream`` and
     ``/chat/{thread}/stop`` refuse without one. It therefore cannot double as
-    "this conversation has something in it": the fast path checkpoints the
-    transcript once, at the end, so a turn that is stopped or dies leaves a
-    titled row over an empty conversation.
+    "this conversation has something in it": a turn that is stopped or dies
+    before saying anything leaves a titled row over an empty conversation.
 
-    Wrapped here, not inside ChatStreamService, because every route passes
-    through this point; the fast path never enters ``stream_response``, so a
-    stamp inside a route could miss threads.
+    Wrapped here, not inside the chat host, because every turn's frames pass
+    through this point.
 
     Stamped before the frame is yielded: a reader that has seen the frame may
     ask for the session list in the next breath.
@@ -1703,10 +1918,7 @@ async def get_history(thread_id: ThreadId, request: Request) -> dict[str, Any]:
         user_id = request.state.current_user.id
         if not await session_belongs_to_user(thread_id, user_id):
             raise HTTPException(status_code=404, detail="Session not found")
-        active_agent = getattr(app.state, "agent", None) or agent
-        if active_agent is None:
-            raise HTTPException(status_code=503, detail="Agent is not ready")
-        return {"messages": await history_service.build_history(active_agent, thread_id, user_id)}
+        return {"messages": await transcript_history(thread_id, user_id, chart_service)}
     except HTTPException:
         raise
     except Exception as exc:

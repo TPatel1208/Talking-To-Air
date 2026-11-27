@@ -6,18 +6,9 @@ import { buildMapStyle, fetchTileConfig } from '../utils/mapTiles.js'
 import { fetchUsStatesGeoJSON, isConusBounds } from '../utils/regionBorders.js'
 import { apiFetch } from '../utils/apiFetch.js'
 import { API_BASE } from '../config.js'
+import { colouringLegend, monitorColour, monitorValue, popupLines } from '../utils/monitorColouring.js'
 
 const NO_ROWS = []
-
-function getAQIColor(val, minVal, maxVal) {
-  if (val == null || isNaN(val)) return '#94a3b8'
-  const range = maxVal - minVal
-  const ratio = range > 0 ? Math.max(0, Math.min(1, (val - minVal) / range)) : 0.5
-  if (ratio < 0.25) return '#10b981' // Green / Good
-  if (ratio < 0.5) return '#f59e0b'  // Amber / Moderate
-  if (ratio < 0.75) return '#f97316' // Orange / Sensitive
-  return '#ef4444'                  // Red / High
-}
 
 function StatCard({ label, value, subtitle }) {
   return (
@@ -99,9 +90,28 @@ function MapColorbar({ minVal, maxVal, units, title = 'EPA Ground Monitors' }) {
   )
 }
 
+function CategoryLegend({ legend }) {
+  return (
+    <div style={{
+      position: 'absolute', left: 12, bottom: 12, maxWidth: 230,
+      background: 'rgba(255,255,255,0.92)', borderRadius: '6px', padding: '6px 10px 8px',
+      boxShadow: 'var(--shadow-sm)', zIndex: 1, pointerEvents: 'auto',
+    }}>
+      <div style={{ fontSize: '9.5px', fontWeight: 700, color: '#333', marginBottom: 4 }}>{legend.title}</div>
+      {legend.entries.map(entry => (
+        <div key={entry.category} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '9.5px', color: '#333', lineHeight: 1.5 }}>
+          <span style={{ width: 9, height: 9, borderRadius: '50%', background: entry.color, flexShrink: 0, border: '1px solid rgba(0,0,0,0.25)' }} />
+          <span>{entry.category}</span>
+          {entry.range && <span style={{ color: '#777', marginLeft: 'auto' }}>{entry.range}</span>}
+        </div>
+      ))}
+    </div>
+  )
+}
+
 export default function TableMapPanel({ artifact, height = 480, isCompare = false }) {
   const inlineRows = artifact?.rows?.length ? artifact.rows : null
-  const [fetched, setFetched] = useState({ id: null, rows: NO_ROWS, error: null })
+  const [fetched, setFetched] = useState({ id: null, rows: NO_ROWS, metadata: null, error: null })
   const [selectedSiteId, setSelectedSiteId] = useState(null)
 
   const containerRef = useRef(null)
@@ -119,10 +129,10 @@ export default function TableMapPanel({ artifact, height = 480, isCompare = fals
         return res.json()
       })
       .then(data => {
-        if (!cancelled) setFetched({ id, rows: data.rows || NO_ROWS, error: null })
+        if (!cancelled) setFetched({ id, rows: data.rows || NO_ROWS, metadata: data.metadata || null, error: null })
       })
       .catch(err => {
-        if (!cancelled) setFetched({ id, rows: NO_ROWS, error: err.message || 'Failed to load table data' })
+        if (!cancelled) setFetched({ id, rows: NO_ROWS, metadata: null, error: err.message || 'Failed to load table data' })
       })
 
     return () => {
@@ -133,6 +143,8 @@ export default function TableMapPanel({ artifact, height = 480, isCompare = fals
   const fetchedThis = fetched.id === artifact?.id
   const rows = inlineRows || (fetchedThis ? fetched.rows : NO_ROWS)
   const error = !inlineRows && fetchedThis ? fetched.error : null
+  const tableMetadata = artifact?.metadata?.colouring ? artifact.metadata : (fetchedThis ? fetched.metadata : null)
+  const legend = useMemo(() => colouringLegend(tableMetadata), [tableMetadata])
   const loading = !inlineRows && Boolean(artifact?.id) && !fetchedThis
 
   // 2. Filter rows with valid coordinates
@@ -147,10 +159,7 @@ export default function TableMapPanel({ artifact, height = 480, isCompare = fals
       .map(r => {
         const lat = Number(r.latitude)
         const lon = Number(r.longitude)
-        const meanVal = r.mean != null && !isNaN(Number(r.mean)) ? Number(r.mean) : null
-        const maxVal = r.max != null && !isNaN(Number(r.max)) ? Number(r.max) : null
-        const peakVal = r.peak?.value != null ? Number(r.peak.value) : null
-        const primaryVal = meanVal ?? maxVal ?? peakVal
+        const primaryVal = monitorValue(r)
         return {
           ...r,
           lat,
@@ -200,19 +209,13 @@ export default function TableMapPanel({ artifact, height = 480, isCompare = fals
         <div style="font-size: 10.5px; font-family: monospace; color: #666; margin-bottom: 8px;">
           Site ${m.site_id}
         </div>
-        <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px;">
-          <span style="font-size: 11.5px; color: #555;">Daily Mean:</span>
+        ${popupLines(m).map(line => `
+        <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 4px;">
+          <span style="font-size: 11.5px; color: #555;">${line.label}:</span>
           <span style="font-weight: 800; font-size: 13px; color: #000;">
-            ${m.mean != null ? Number(m.mean).toFixed(2) : '—'} ${m.units}
+            ${line.color ? `<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${line.color};margin-right:5px;"></span>` : ''}${line.value}
           </span>
-        </div>
-        ${m.max != null && !isNaN(Number(m.max)) ? `
-        <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px;">
-          <span style="font-size: 11.5px; color: #555;">Daily Max:</span>
-          <span style="font-weight: 800; font-size: 13px; color: #e11d48;">
-            ${Number(m.max).toFixed(2)} ${m.units}
-          </span>
-        </div>` : ''}
+        </div>`).join('')}
         ${m.peak?.first_max_hour != null ? `
         <div style="font-size: 10px; color: #777; margin-top: 4px; border-top: 1px solid #eee; padding-top: 4px;">
           Peak at hour ${m.peak.first_max_hour}:00
@@ -300,7 +303,7 @@ export default function TableMapPanel({ artifact, height = 480, isCompare = fals
               peak_hour: m.peak?.first_max_hour != null ? `${m.peak.first_max_hour}:00` : '',
               units: m.units,
               standard: m.pollutant_standard || '',
-              color: getAQIColor(m.primaryVal, minVal, maxVal),
+              color: monitorColour(m, legend, minVal, maxVal),
             },
           })),
         }
@@ -365,7 +368,7 @@ export default function TableMapPanel({ artifact, height = 480, isCompare = fals
       if (map) map.remove()
       mapRef.current = null
     }
-  }, [monitors, minVal, maxVal])
+  }, [monitors, minVal, maxVal, legend])
 
   // Fly to monitor when clicked from the station selector
   const handleSelectMonitor = (m) => {
@@ -428,12 +431,16 @@ export default function TableMapPanel({ artifact, height = 480, isCompare = fals
         <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
 
         {/* Scientific Overlay Colorbar */}
-        <MapColorbar
-          minVal={minVal}
-          maxVal={maxVal}
-          units={units}
-          title="EPA Ground Monitors"
-        />
+        {legend ? (
+          <CategoryLegend legend={legend} />
+        ) : (
+          <MapColorbar
+            minVal={minVal}
+            maxVal={maxVal}
+            units={units}
+            title="EPA Ground Monitors"
+          />
+        )}
       </div>
 
       {/* Supporting Information & Statistics Grid (rendered in single view) */}
@@ -479,7 +486,7 @@ export default function TableMapPanel({ artifact, height = 480, isCompare = fals
             <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
               {monitors.map(m => {
                 const isSelected = selectedSiteId === m.site_id
-                const color = getAQIColor(m.primaryVal, minVal, maxVal)
+                const color = monitorColour(m, legend, minVal, maxVal)
                 return (
                   <button
                     key={m.site_id}

@@ -1,6 +1,6 @@
 """Hermeticity guard for the overlay store.
 
-Importing ``plot_tools`` or ``api`` must not create ``Backend/overlay_store/``
+Importing the overlay store or ``api`` must not create ``Backend/overlay_store/``
 or ``Backend/outputs/`` inside the checkout. That is the cube-store
 non-hermeticity again (:func:`cache_isolation.isolate_cube_store`), with two
 extra twists:
@@ -129,9 +129,9 @@ class StoreStateAssertions(unittest.TestCase):
 
 class OverlayStoreIsolationTests(StoreStateAssertions):
     def test_the_overlay_store_resolves_outside_the_checkout(self) -> None:
-        from tta_backend.tools.satellite_tools import plot_tools
+        from tta_backend.services import overlay_store
 
-        store = plot_tools.overlay_store_dir()
+        store = overlay_store._store_root()
 
         self.assertFalse(
             _is_inside(store, APP_ROOT),
@@ -147,22 +147,22 @@ class OverlayStoreIsolationTests(StoreStateAssertions):
         degrade charts nobody touched. Checked separately from the checkout
         test because on a Windows host the deployment path resolves outside
         the checkout."""
-        from tta_backend.tools.satellite_tools import plot_tools
+        from tta_backend.services import overlay_store
 
         self.assertNotEqual(
-            os.path.abspath(plot_tools.overlay_store_dir()),
+            os.path.abspath(overlay_store._store_root()),
             os.path.abspath(deployment_overlay_store_dir()),
             "the overlay store resolves to the deployment volume during tests",
         )
 
-    def test_importing_plot_tools_does_not_create_the_checkout_store(self) -> None:
+    def test_importing_the_overlay_store_does_not_create_the_checkout_store(self) -> None:
         """Import must be free of filesystem side effects.
 
         Asserting on import alone is the sharp version of this test: the
         directory appeared with no test having rendered anything, which is why a
         fixture that cleaned up after each *test* would never have caught it.
         """
-        importlib.import_module("tta_backend.tools.satellite_tools.plot_tools")
+        importlib.import_module("tta_backend.services.overlay_store")
 
         self.assertUntouched(CHECKOUT_OVERLAY_STORE)
 
@@ -173,14 +173,14 @@ class OverlayStoreIsolationTests(StoreStateAssertions):
     def test_storing_an_overlay_writes_outside_the_checkout(self) -> None:
         import numpy as np
 
-        from tta_backend.tools.satellite_tools import plot_tools
+        from tta_backend.services import overlay_store
         from tta_backend.utils.colormaps import resolve
 
         lats = np.linspace(30.0, 33.0, 8)
         lons = np.linspace(-100.0, -96.0, 10)
         values = np.linspace(0.0, 1.0, lats.size * lons.size).reshape(lats.size, lons.size)
 
-        fields = plot_tools._render_and_store_overlay(
+        fields = overlay_store.render_and_store(
             lats, lons, values, resolve("NO2").lut, 0.0, 1.0
         )
 
@@ -213,8 +213,8 @@ class OverlayStoreIsolationTests(StoreStateAssertions):
         import tempfile
         import unittest.mock
 
-        from tta_backend.config.settings import get_settings
-        from tta_backend.tools.satellite_tools import plot_tools
+        from tta_backend.infrastructure.settings import get_settings
+        from tta_backend.services import overlay_store
 
         with tempfile.TemporaryDirectory() as tmp:
             with unittest.mock.patch.dict(os.environ, {"OVERLAY_STORE_DIR": tmp}):
@@ -222,7 +222,7 @@ class OverlayStoreIsolationTests(StoreStateAssertions):
                 self.addCleanup(get_settings.cache_clear)
 
                 self.assertEqual(
-                    os.path.abspath(plot_tools.overlay_store_dir()), os.path.abspath(tmp)
+                    os.path.abspath(overlay_store._store_root()), os.path.abspath(tmp)
                 )
 
 
